@@ -34,7 +34,8 @@ MAIN_KB = ReplyKeyboardMarkup(
      ["🛒 Магазин", "🎰 Казино"],
      ["🏆 Достижения", "🎁 Ежедневные"],
      ["⚔️ PvP", "🏰 Кланы"],
-     ["🐾 Питомцы", "⚙️ Помощь"]],
+     ["🐾 Питомцы", "💼 Бизнес"],
+     ["⚙️ Помощь"]],
     resize_keyboard=True
 )
 
@@ -117,6 +118,14 @@ PETS = {
     "rabbit": {"name": "🐰 Кролик", "bonus": {"speed": 3, "escape": 1}, "rarity": "common", "emoji": "🐰"},
 }
 
+# Бизнесы
+BUSINESSES = {
+    "stall": {"name": "🧺 Ларёк", "price": 50, "income_per_min": 2},
+    "shop": {"name": "🏪 Магазин", "price": 800, "income_per_min": 6},
+    "farm": {"name": "🌾 Ферма", "price": 1500, "income_per_min": 12},
+    "mine": {"name": "⛏️ Шахта", "price": 3000, "income_per_min": 25},
+}
+
 # Ежедневные награды
 DAILY_REWARDS = {
     1: {"gold": 10, "xp": 20, "item": "Малое зелье лечения"},
@@ -172,6 +181,10 @@ def migrate_player_data() -> None:
             player["luck"] = 0
         if "equipment" not in player:
             player["equipment"] = {}
+        if "businesses" not in player:
+            player["businesses"] = {}
+        if "last_business_claim" not in player:
+            player["last_business_claim"] = None
     
     # Сохраняем обновленные данные
     save_players()
@@ -664,6 +677,27 @@ def build_shop_kb(player: Dict[str, Any] = None) -> InlineKeyboardMarkup:
             buttons.append([InlineKeyboardButton(f"{emoji} Купить: {item_name} ({price}💰)", callback_data=f"shop:buy:{item_name}")])
     
     buttons.append([InlineKeyboardButton("Закрыть", callback_data="shop:close")])
+    return InlineKeyboardMarkup(buttons)
+
+def build_businesses_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
+    buttons = []
+    owned = player.get("businesses", {})
+    for biz_id, meta in BUSINESSES.items():
+        name = meta["name"]
+        price = meta["price"]
+        income = meta["income_per_min"]
+        if biz_id in owned:
+            level = owned[biz_id].get("level", 1)
+            buttons.append([InlineKeyboardButton(
+                f"{name} ✅ ур.{level} (доход {income * level}/мин)", callback_data="biz:owned"
+            )])
+        else:
+            buttons.append([InlineKeyboardButton(
+                f"{name} — {price}💰 (доход {income}/мин)", callback_data=f"biz:buy:{biz_id}"
+            )])
+    buttons.append([InlineKeyboardButton("📥 Забрать доход", callback_data="biz:claim")])
+    buttons.append([InlineKeyboardButton("➕ Улучшить все (x2 доход)", callback_data="biz:upgrade_all")])
+    buttons.append([InlineKeyboardButton("🚪 Закрыть", callback_data="biz:close")])
     return InlineKeyboardMarkup(buttons)
 
 def battle_text(player: Dict[str, Any], enemy: Dict[str, Any], log: str = "") -> str:
@@ -1284,6 +1318,19 @@ async def shop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p = players[uid]
     await update.message.reply_text("Лавка торговца:", reply_markup=build_shop_kb(p))
 
+async def businesses_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.effective_user.id)
+    if uid not in players:
+        await update.message.reply_text("Сначала нажми /start")
+        return
+    p = players[uid]
+    await update.message.reply_text(
+        "💼 Бизнесы: покупай и получай пассивный доход!\n\n"
+        "— Доход начисляется каждую минуту.\n"
+        "— Улучшения увеличивают доход x уровню.",
+        reply_markup=build_businesses_kb(p)
+    )
+
 async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1360,8 +1407,90 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     query,
                     f"❌ У тебя уже есть питомец {item_name}! Золото возвращено. Золото: {p['gold']}.",
                     reply_markup=build_shop_kb(p)
-                )
+            )
 
+async def businesses_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    if uid not in players:
+        await safe_edit_message_text(query, "Сначала нажми /start")
+        return
+    p = players[uid]
+    data = query.data  # biz:buy:ID | biz:claim | biz:upgrade_all | biz:close | biz:owned
+
+    if data == "biz:close":
+        await safe_edit_message_text(query, "Закрыто.")
+        return
+    if data == "biz:owned":
+        await query.answer("Уже куплено")
+        return
+    if data == "biz:claim":
+        last = p.get("last_business_claim")
+        now = datetime.now()
+        if last:
+            last_dt = datetime.fromisoformat(last)
+        else:
+            last_dt = now
+            p["last_business_claim"] = now.isoformat()
+        minutes = max(0, int((now - last_dt).total_seconds() // 60))
+        owned = p.get("businesses", {})
+        total_income = 0
+        for biz_id, meta in owned.items():
+            base = BUSINESSES.get(biz_id, {}).get("income_per_min", 0)
+            level = meta.get("level", 1)
+            total_income += base * level * minutes
+        p["gold"] += total_income
+        p["last_business_claim"] = now.isoformat()
+        save_players()
+        await safe_edit_message_text(
+            query,
+            f"📥 Получено: {total_income}💰 за {minutes} мин. Текущий баланс: {p['gold']}💰",
+            reply_markup=build_businesses_kb(p)
+        )
+        return
+    if data == "biz:upgrade_all":
+        owned = p.setdefault("businesses", {})
+        cost = 0
+        for biz_id in owned.keys():
+            # Стоимость апгрейда: 50% от цены покупки
+            cost += int(BUSINESSES[biz_id]["price"] * 0.5)
+        if p["gold"] < cost:
+            await query.answer(f"Не хватает золота для улучшения (нужно {cost}💰)", show_alert=True)
+            return
+        p["gold"] -= cost
+        for biz_id in owned.keys():
+            owned[biz_id]["level"] = owned[biz_id].get("level", 1) + 1
+        save_players()
+        await safe_edit_message_text(
+            query,
+            f"✅ Все бизнесы улучшены. Потрачено {cost}💰. Текущий баланс: {p['gold']}💰",
+            reply_markup=build_businesses_kb(p)
+        )
+        return
+    if data.startswith("biz:buy:"):
+        _, _, biz_id = data.split(":", 2)
+        if biz_id not in BUSINESSES:
+            await query.answer("Такого бизнеса нет", show_alert=True)
+            return
+        if biz_id in p.get("businesses", {}):
+            await query.answer("Уже куплено", show_alert=True)
+            return
+        price = BUSINESSES[biz_id]["price"]
+        if p["gold"] < price:
+            await query.answer("Недостаточно золота", show_alert=True)
+            return
+        p["gold"] -= price
+        p.setdefault("businesses", {})[biz_id] = {"level": 1, "bought_at": datetime.now().isoformat()}
+        if not p.get("last_business_claim"):
+            p["last_business_claim"] = datetime.now().isoformat()
+        save_players()
+        await safe_edit_message_text(
+            query,
+            f"💼 Куплен бизнес: {BUSINESSES[biz_id]['name']} за {price}💰. Баланс: {p['gold']}💰",
+            reply_markup=build_businesses_kb(p)
+        )
+        return
 async def casino_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /casino"""
     uid = str(update.effective_user.id)
@@ -1893,6 +2022,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await daily_cmd(update, context)
     elif msg.text == "🐾 Питомцы":
         await pets_cmd(update, context)
+    elif msg.text == "💼 Бизнес":
+        await businesses_cmd(update, context)
     elif msg.text == "🏰 Кланы":
         await clans_cmd(update, context)
     elif msg.text == "⚔️ PvP":
@@ -1913,8 +2044,9 @@ def build_clans_keyboard(player: Dict[str, Any]) -> InlineKeyboardMarkup:
         
         # Кнопки для присоединения к существующим кланам
         available_clans = []
+        player_id = str(next((k for k, v in players.items() if v is player), None) or "")
         for clan_name, clan in clans.items():
-            if len(clan['members']) < 20 and clan_name not in clan['members']:
+            if len(clan['members']) < 20 and player_id not in clan['members']:
                 available_clans.append(clan_name)
         
         if available_clans:
@@ -1952,12 +2084,14 @@ def main():
     app.add_handler(CommandHandler("pets", pets_cmd))
     app.add_handler(CommandHandler("clans", clans_cmd))
     app.add_handler(CommandHandler("pvp", pvp_cmd))
+    app.add_handler(CommandHandler("business", businesses_cmd))
     
     # Обработчики callback'ов
     app.add_handler(CallbackQueryHandler(battle_callback, pattern=r"^battle:"))
     app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:"))
     app.add_handler(CallbackQueryHandler(casino_callback, pattern=r"^casino:"))
     app.add_handler(CallbackQueryHandler(clan_callback, pattern=r"^clan:"))
+    app.add_handler(CallbackQueryHandler(businesses_callback, pattern=r"^biz:"))
     
     # Обработчик текстовых сообщений (включая ставки для казино)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
