@@ -2067,7 +2067,7 @@ def build_clans_keyboard(player: Dict[str, Any]) -> InlineKeyboardMarkup:
 def main():
     load_players()
     load_clans()
-    app = ApplicationBuilder().token("8261910418:AAEznpYrq-ZeNUqcobvwq7aQQ7_kUw9QNOQ").build()
+    app = ApplicationBuilder().token("").build()
 
     # Основные команды
     app.add_handler(CommandHandler("start", start))
