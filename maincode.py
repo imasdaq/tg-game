@@ -25,7 +25,10 @@ CLASS_KB = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 MAIN_KB = ReplyKeyboardMarkup(
-    [["🗺️ Приключение", "📊 Статус"], ["🎒 Инвентарь", "🧾 Квесты"], ["🛒 Магазин", "⚙️ Помощь"]],
+    [["🗺️ Приключение", "📊 Статус"], 
+     ["🎒 Инвентарь", "🧾 Квесты"], 
+     ["🛒 Магазин", "🎰 Казино"],
+     ["⚙️ Помощь"]],
     resize_keyboard=True
 )
 
@@ -191,6 +194,73 @@ def ability_description(class_name: str) -> str:
     if class_name == "🕵️ Вор":
         return "Теневая атака: удар, игнорирующий защиту, один раз за бой."
     return ""
+# ----------------------------- Казино --------------------------------
+
+CASINO_GAMES = {
+    "double": {"name": "🎯 Удвоение", "multiplier": 2, "win_chance": 0.48},
+    "dice": {"name": "🎲 Кости", "multiplier": 1.5, "win_chance": 0.5},
+    "roulette": {"name": "🎡 Рулетка", "multiplier": 2, "win_chance": 0.47}
+}
+
+def play_casino(player: Dict[str, Any], game_type: str, bet: int) -> Dict[str, Any]:
+    """Логика игры в казино"""
+    result = {
+        "success": False,
+        "message": "",
+        "new_balance": player["gold"]
+    }
+    
+    # Проверка кулдауна (1 минута)
+    if "last_casino_play" in player:
+        last_play = datetime.fromisoformat(player["last_casino_play"])
+        cooldown = 60
+        elapsed = (datetime.now() - last_play).total_seconds()
+        if elapsed < cooldown:
+            remaining = int(cooldown - elapsed)
+            result["message"] = f"⏳ Подождите {remaining} сек. перед следующей игрой"
+            return result
+    
+    if player["gold"] < bet:
+        result["message"] = "❌ Недостаточно золота!"
+        return result
+    
+    game = CASINO_GAMES[game_type]
+    player["gold"] -= bet
+    player["last_casino_play"] = datetime.now().isoformat()
+    
+    if random.random() < game["win_chance"]:
+        win_amount = int(bet * game["multiplier"])
+        player["gold"] += win_amount
+        result.update({
+            "success": True,
+            "message": f"🎉 Победа! Вы выиграли {win_amount} золота!",
+            "new_balance": player["gold"],
+            "won": win_amount
+        })
+    else:
+        result.update({
+            "message": f"💸 Проигрыш! Вы потеряли {bet} золота.",
+            "new_balance": player["gold"]
+        })
+    
+    save_players()
+    return result
+
+def build_casino_kb(balance: int) -> InlineKeyboardMarkup:
+    """Клавиатура для казино"""
+    buttons = [
+        [
+            InlineKeyboardButton("🎯 Удвоение (x2)", callback_data="casino:double"),
+            InlineKeyboardButton("🎲 Кости (x1.5)", callback_data="casino:dice")
+        ],
+        [
+            InlineKeyboardButton("🎡 Рулетка (x2)", callback_data="casino:roulette"),
+            InlineKeyboardButton("💎 Премиум игры", callback_data="casino:premium")
+        ],
+        [InlineKeyboardButton(f"💰 Баланс: {balance}", callback_data="casino:balance")],
+        [InlineKeyboardButton("🚪 Выход", callback_data="casino:exit")]
+    ]
+    return InlineKeyboardMarkup(buttons)
 
 # ----------------------------- Хендлеры команд -------------------------------
 
@@ -206,26 +276,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "choose_class"
     else:
         await update.message.reply_text(
-            f"С возвращением, {player['name']} ({player['class']})!\n"
-            f"Твоя способность: {ability_description(player['class'])}\nВыбирай действие:",
+            f"✨ С возвращением, {player['name']} ({player['class']})!\n"
+            f"💫 Способность: {ability_description(player['class'])}\n"
+            "Выбирай действие:",
             reply_markup=MAIN_KB
         )
         context.user_data["state"] = "idle"
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "Команды:\n"
-        "/start — начать или продолжить\n"
-        "/status — характеристики\n"
-        "/inventory — инвентарь\n"
-        "/use_potion — выпить малое зелье лечения\n"
-        "/adventure — отправиться в приключение (случайное событие)\n"
-        "/quests — квесты и прогресс\n"
-        "/shop — открыть магазин\n"
-        "/help — помощь\n\n"
-        "Подсказка: используй кнопки внизу для удобства."
+        "🎮 <b>Доступные команды:</b>\n\n"
+        "⚔️ <b>Основные:</b>\n"
+        "/start - Начать игру\n"
+        "/status - Показать статус\n"
+        "/inventory - Открыть инвентарь\n\n"
+        "🌍 <b>Игровые:</b>\n"
+        "/adventure - Отправиться в приключение\n"
+        "/quests - Активные квесты\n"
+        "/shop - Посетить магазин\n"
+        "/casino - Играть в казино\n\n"
+        "🧪 <b>Предметы:</b>\n"
+        "/use_potion - Использовать зелье\n\n"
+        "🛠️ <b>Прочее:</b>\n"
+        "/help - Показать это сообщение"
     )
-    await update.message.reply_text(text, reply_markup=MAIN_KB)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_KB)
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -234,14 +309,14 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     p = players[uid]
     text = (
-        f"📊 Статус {p['name']} ({p['class'] or 'Без класса'})\n"
-        f"Уровень: {p['level']} ({p['xp']}/{get_xp_to_next(p['level'])} XP)\n"
-        f"HP: {p['hp']}/{p['max_hp']}\n"
-        f"Атака: {p['attack']} Защита: {p['defense']}\n"
-        f"Золото: {p['gold']}\n"
-        f"Способность: {ability_description(p['class']) if p['class'] else '-'}"
+        f"📊 <b>Статус {p['name']} ({p['class'] or 'Без класса'})</b>\n\n"
+        f"⚔️ Уровень: <b>{p['level']}</b> ({p['xp']}/{get_xp_to_next(p['level'])} XP)\n"
+        f"❤️ HP: <b>{p['hp']}/{p['max_hp']}</b>\n"
+        f"🗡️ Атака: <b>{p['attack']}</b> 🛡️ Защита: <b>{p['defense']}</b>\n"
+        f"💰 Золото: <b>{p['gold']}</b>\n\n"
+        f"✨ Способность: {ability_description(p['class']) if p['class'] else '-'}"
     )
-    await update.message.reply_text(text, reply_markup=MAIN_KB)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_KB)
 
 async def inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -250,13 +325,16 @@ async def inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     p = players[uid]
     if not p["inventory"]:
-        await update.message.reply_text("Твой инвентарь пуст.", reply_markup=MAIN_KB)
+        await update.message.reply_text("🎒 <b>Твой инвентарь пуст.</b>", parse_mode="HTML", reply_markup=MAIN_KB)
         return
-    lines = ["🎒 Инвентарь:"]
-    for item, cnt in p["inventory"].items():
-        lines.append(f"- {item} x{cnt}")
-    lines.append("\nПодсказка: попробуй /use_potion, чтобы восстановить здоровье.")
-    await update.message.reply_text("\n".join(lines), reply_markup=MAIN_KB)
+    
+    items = "\n".join(f"▪️ {item} ×{count}" for item, count in p["inventory"].items())
+    await update.message.reply_text(
+        f"🎒 <b>Инвентарь:</b>\n\n{items}\n\n"
+        "ℹ️ Используй /use_potion для лечения",
+        parse_mode="HTML",
+        reply_markup=MAIN_KB
+    )
 
 async def use_potion_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -266,13 +344,13 @@ async def use_potion_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p = players[uid]
     item = "Малое зелье лечения"
     if p["hp"] >= p["max_hp"]:
-        await update.message.reply_text("У тебя полное здоровье.")
+        await update.message.reply_text("❤️ У тебя полное здоровье!")
         return
     if consume_item(p, item, 1):
         healed = heal_player(p, 35)
-        await update.message.reply_text(f"Ты выпил зелье и восстановил {healed} HP. Текущее HP: {p['hp']}/{p['max_hp']}")
+        await update.message.reply_text(f"🧪 Ты выпил зелье и восстановил {healed} HP. Теперь: {p['hp']}/{p['max_hp']}")
     else:
-        await update.message.reply_text("Нет Малых зелий лечения в инвентаре.")
+        await update.message.reply_text("❌ Нет Малых зелий лечения в инвентаре.")
 
 async def quests_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -282,15 +360,91 @@ async def quests_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p = players[uid]
     q = p["quests"]
     if not q:
-        await update.message.reply_text("Квестов пока нет.", reply_markup=MAIN_KB)
+        await update.message.reply_text("📜 У тебя пока нет квестов.", reply_markup=MAIN_KB)
         return
-    lines = ["🧾 Квесты:"]
-    for key, quest in q.items():
-        lines.append(
-            f"- {quest['title']} [{quest['status']}]: {quest['progress']}/{quest['required']} — {quest['desc']}"
+    
+    quests_text = []
+    for quest in q.values():
+        status = "✅" if quest["status"] == "completed" else "⌛"
+        quests_text.append(
+            f"{status} <b>{quest['title']}</b>\n"
+            f"{quest['desc']}\n"
+            f"Прогресс: {quest['progress']}/{quest['required']}\n"
         )
-    await update.message.reply_text("\n".join(lines), reply_markup=MAIN_KB)
+    
+    await update.message.reply_text(
+        "📜 <b>Активные квесты:</b>\n\n" + "\n".join(quests_text),
+        parse_mode="HTML",
+        reply_markup=MAIN_KB
+    )
+# ----------------------------- Казино команды -------------------------------
 
+async def casino_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню казино"""
+    uid = str(update.effective_user.id)
+    if uid not in players:
+        await update.message.reply_text("Сначала нажми /start")
+        return
+    
+    p = players[uid]
+    await update.message.reply_text(
+        "🎰 <b>Добро пожаловать в Казино Удачи!</b>\n\n"
+        f"💰 Ваш баланс: <b>{p['gold']}</b> золота\n"
+        "🎮 Выберите игру из меню ниже:",
+        parse_mode="HTML",
+        reply_markup=build_casino_kb(p["gold"])
+    )
+
+async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора игры в казино"""
+    query = update.callback_query
+    await query.answer()
+    
+    uid = str(query.from_user.id)
+    if uid not in players:
+        await query.edit_message_text("❌ Сначала начните игру (/start)")
+        return
+    
+    p = players[uid]
+    data = query.data.split(":")
+    
+    if data[1] == "exit":
+        await query.edit_message_text("🚪 Вы покинули казино. Удачи в приключениях!")
+        return
+    elif data[1] == "balance":
+        await query.answer(f"💰 Ваш баланс: {p['gold']} золота", show_alert=True)
+        return
+    elif data[1] == "premium":
+        await query.answer("⚡ Премиум игры скоро будут доступны!", show_alert=True)
+        return
+    
+    # Автоматическая ставка (10% от баланса, мин 5, макс 100)
+    bet = max(5, min(100, p["gold"] // 10))
+    
+    if p["gold"] < 5:
+        await query.edit_message_text(
+            "❌ У вас недостаточно золота для игры!\n"
+            f"Минимальная ставка: 5 золота (у вас: {p['gold']})\n\n"
+            "Заработать золото можно в приключениях (/adventure)",
+            reply_markup=build_casino_kb(p["gold"])
+        )
+        return
+    
+    result = play_casino(p, data[1], bet)
+    
+    if "Подождите" in result["message"]:
+        await query.answer(result["message"], show_alert=True)
+        return
+    
+    await query.edit_message_text(
+        f"🎰 <b>{CASINO_GAMES[data[1]]['name']}</b>\n"
+        f"💵 Ставка: <b>{bet}</b> золота\n\n"
+        f"{result['message']}\n\n"
+        f"💰 Новый баланс: <b>{result['new_balance']}</b> золота\n\n"
+        "🎮 Хотите сыграть ещё?",
+        parse_mode="HTML",
+        reply_markup=build_casino_kb(result["new_balance"])
+    )
 # ----------------------------- Приключения/События ---------------------------
 
 def build_battle_kb() -> InlineKeyboardMarkup:
@@ -560,7 +714,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверка кулдауна
         last_adventure = context.user_data.get("last_adventure")
         if last_adventure:
-            cooldown = 30  # 30 секунд кулдауна
+            cooldown = 10  # 30 секунд кулдауна
             elapsed = (datetime.now() - last_adventure).total_seconds()
             if elapsed < cooldown:
                 remaining = int(cooldown - elapsed)
@@ -574,6 +728,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await quests_cmd(update, context)
     elif msg.text == "🛒 Магазин":
         await shop_cmd(update, context)
+    elif msg.text == "🎰 Казино":
+        await casino_cmd(update, context)
     elif msg.text == "⚙️ Помощь":
         await help_cmd(update, context)
     else:
@@ -584,20 +740,25 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     load_players()
-    app = ApplicationBuilder().token("YOUR_BOT_TOKEN_HERE").build()
+    app = ApplicationBuilder().token("8261910418:AAEF8cwJJ1KlnZS0sweMEtpSXUvAH_KAoA0").build()
 
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("inventory", inventory_cmd))
     app.add_handler(CommandHandler("use_potion", use_potion_cmd))
-    app.add_handler(CommandHandler("adventure", adventure_cmd))
     app.add_handler(CommandHandler("quests", quests_cmd))
+    app.add_handler(CommandHandler("adventure", adventure_cmd))
     app.add_handler(CommandHandler("shop", shop_cmd))
-
+    app.add_handler(CommandHandler("casino", casino_cmd))
+    
+    # Обработчики callback'ов
     app.add_handler(CallbackQueryHandler(battle_callback, pattern=r"^battle:"))
     app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:"))
-
+    app.add_handler(CallbackQueryHandler(casino_callback, pattern=r"^casino:"))
+    
+    # Обработчик текстовых сообщений
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
     print("Bot is running...")
