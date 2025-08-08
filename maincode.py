@@ -477,15 +477,23 @@ async def adventure_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сначала нажми /start")
         return
     
+    # Проверка активного боя или торговца
+    if context.user_data.get("battle") or context.user_data.get("merchant_active"):
+        await update.message.reply_text(
+            "⚠️ Сначала завершите текущее событие (бой или торговлю)!",
+            reply_markup=MAIN_KB
+        )
+        return
+    
     # Проверка кулдауна
     last_adventure = context.user_data.get("last_adventure")
     if last_adventure:
-        cooldown = 30  # 30 секунд кулдауна
+        cooldown = 6
         elapsed = (datetime.now() - last_adventure).total_seconds()
         if elapsed < cooldown:
             remaining = int(cooldown - elapsed)
             await update.message.reply_text(
-                f"Ты устал и не готов к новым приключениям. Отдохни ещё {remaining} секунд.",
+                f"Ты устал. Отдохни ещё {remaining} секунд.",
                 reply_markup=MAIN_KB
             )
             return
@@ -517,8 +525,11 @@ async def adventure_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_item(p, item, 1)
         await update.message.reply_text(f"Ты нашёл предмет: {item}! Он добавлен в инвентарь.")
     elif event == "merchant":
-        await update.message.reply_text("Тебе повстречался странствующий торговец:", reply_markup=build_shop_kb())
-
+        context.user_data["merchant_active"] = True
+        await update.message.reply_text(
+            "Тебе повстречался странствующий торговец:",
+            reply_markup=build_shop_kb()
+        )
 
 async def shop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Лавка торговца:", reply_markup=build_shop_kb())
@@ -530,10 +541,12 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in players:
         await query.edit_message_text("Сначала нажми /start")
         return
+    
     p = players[uid]
     data = query.data # shop:buy:ITEM or shop:close
 
     if data == "shop:close":
+        context.user_data.pop("merchant_active", None)
         await query.edit_message_text("Торговец уходит в туман...")
         return
 
@@ -542,6 +555,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if item_name not in SHOP_ITEMS:
             await query.edit_message_text("Такого товара нет.")
             return
+        
         price = SHOP_ITEMS[item_name]["price"]
         if p["gold"] < price:
             await query.edit_message_text(f"Не хватает золота. Нужно {price}💰, у тебя {p['gold']}💰.")
@@ -549,18 +563,23 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         p["gold"] -= price
         effect = SHOP_ITEMS[item_name]["effect"]
-        # Предметы сразу применяются, чтобы упростить механику, кроме зелий — они в инвентарь
+        
         if "heal" in effect and SHOP_ITEMS[item_name]["type"] == "consumable" and item_name == "Малое зелье лечения":
             add_item(p, item_name, 1)
-            await query.edit_message_text(f"Ты купил: {item_name}. В инвентаре пополнение! Золото: {p['gold']}.")
+            await query.edit_message_text(
+                f"Ты купил: {item_name}. В инвентаре пополнение! Золото: {p['gold']}.",
+                reply_markup=build_shop_kb()  # Оставляем магазин открытым
+            )
         else:
-            # Применяем постоянные бафы
             if "attack_plus" in effect:
                 p["attack"] += effect["attack_plus"]
             if "defense_plus" in effect:
                 p["defense"] += effect["defense_plus"]
             save_players()
-            await query.edit_message_text(f"Ты купил и использовал: {item_name}. Твоя сила растёт! Золото: {p['gold']}.")
+            await query.edit_message_text(
+                f"Ты купил и использовал: {item_name}. Твоя сила растёт! Золото: {p['gold']}.",
+                reply_markup=build_shop_kb()  # Оставляем магазин открытым
+            )
 
 # ----------------------------- Бой: callback-и -------------------------------
 
@@ -571,6 +590,7 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in players:
         await query.edit_message_text("Сначала нажми /start")
         return
+    
     p = players[uid]
     state = context.user_data.get("battle")
     if not state:
@@ -581,7 +601,6 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = query.data # battle:attack | battle:ability | battle:potion | battle:run
 
     log = ""
-    # Ход игрока
     if action == "battle:attack":
         dmg = dmg_roll(p["attack"], enemy["defense"])
         enemy["hp"] -= dmg
@@ -613,19 +632,16 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             log += "У тебя нет Малых зелий лечения.\n"
     elif action == "battle:run":
-        # Шанс на побег
         if random.random() < 0.6:
             await query.edit_message_text("Ты успешно сбежал с поля боя.")
-            context.user_data["battle"] = None
+            context.user_data.pop("battle", None)
             return
         else:
             log += "Не удалось сбежать!\n"
 
     # Проверка смерти врага
     if enemy["hp"] <= 0:
-        # Награда
         loot_text = grant_rewards(p, enemy["xp"], enemy["gold"], enemy.get("loot"))
-        # Прогресс квеста
         q = p["quests"].get("rat_hunter")
         quest_text = ""
         if q and q["status"] == "active" and enemy["type"] == q["target_type"]:
@@ -643,7 +659,7 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"Ты победил {enemy['name']}! {loot_text}{quest_text}"
         )
-        context.user_data["battle"] = None
+        context.user_data.pop("battle", None)
         return
 
     # Ход врага (если жив)
@@ -657,14 +673,13 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if p["hp"] <= 0:
         loss_gold = min(10, p["gold"])
         p["gold"] -= loss_gold
-        # Респавн: половина HP
         p["hp"] = max(1, p["max_hp"] // 2)
         save_players()
         await query.edit_message_text(
             f"Ты пал в бою... Потеряно {loss_gold} золота. "
             f"Ты приходишь в себя с {p['hp']}/{p['max_hp']} HP."
         )
-        context.user_data["battle"] = None
+        context.user_data.pop("battle", None)
         return
 
     # Обновляем текст боя
@@ -674,7 +689,6 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=build_battle_kb()
         )
     except Exception:
-        # Если редактирование не удалось — просто отправим новое сообщение
         await query.message.reply_text(
             battle_text(p, enemy, log),
             reply_markup=build_battle_kb()
@@ -683,7 +697,6 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------------------- Выбор класса/тексты ---------------------------
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Обработка текстовых кнопок главного меню и выбора класса
     msg = update.message
     user = update.effective_user
     player = ensure_player(user.id, user.first_name or "Герой")
@@ -711,18 +724,14 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif msg.text == "🎒 Инвентарь":
         await inventory_cmd(update, context)
     elif msg.text == "🗺️ Приключение":
-        # Проверка кулдауна
-        last_adventure = context.user_data.get("last_adventure")
-        if last_adventure:
-            cooldown = 10  # 30 секунд кулдауна
-            elapsed = (datetime.now() - last_adventure).total_seconds()
-            if elapsed < cooldown:
-                remaining = int(cooldown - elapsed)
-                await msg.reply_text(
-                    f"Ты устал 😥 и не готов к новым приключениям 🗺️. Отдохни ещё {remaining} секунд .",
-                    reply_markup=MAIN_KB
-                )
-                return
+        # Проверка активного боя или торговца
+        if context.user_data.get("battle"):
+            await msg.reply_text("⚠️ Сначала завершите текущий бой!", reply_markup=MAIN_KB)
+            return
+        if context.user_data.get("merchant_active"):
+            await msg.reply_text("⚠️ Сначала завершите торговлю с купцом!", reply_markup=MAIN_KB)
+            return
+            
         await adventure_cmd(update, context)
     elif msg.text == "🧾 Квесты":
         await quests_cmd(update, context)
@@ -733,14 +742,13 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif msg.text == "⚙️ Помощь":
         await help_cmd(update, context)
     else:
-        # Игнор или подсказка
         await msg.reply_text("Не понимаю. Используй кнопки или команды /help.", reply_markup=MAIN_KB)
 
 # --------------------------------- Main --------------------------------------
 
 def main():
     load_players()
-    app = ApplicationBuilder().token("").build()
+    app = ApplicationBuilder().token("YOUR_TOKEN_BOT").build()
 
     # Основные команды
     app.add_handler(CommandHandler("start", start))
