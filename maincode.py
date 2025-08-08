@@ -1,4 +1,4 @@
-    # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import json
 from datetime import datetime
 import os
@@ -46,6 +46,13 @@ SHOP_ITEMS = {
     "Кожаная броня": {"price": 30, "type": "consumable", "effect": {"defense_plus": 1}},
 }
 
+# Константы казино
+CASINO_GAMES = {
+    "double": {"name": "🎯 Удвоение", "multiplier": 2, "win_chance": 0.45, "min_bet": 5},
+    "dice": {"name": "🎲 Кости", "multiplier": 1.5, "win_chance": 0.5, "min_bet": 5},
+    "roulette": {"name": "🎡 Рулетка", "multiplier": 2, "win_chance": 0.4, "min_bet": 5}
+}
+
 # ----------------------------- Утилиты сохранения -----------------------------
 
 def load_players() -> None:
@@ -84,9 +91,10 @@ def ensure_player(user_id: int, name: str) -> Dict[str, Any]:
             "max_hp": 100,
             "attack": 5,
             "defense": 2,
-            "gold": 25,
+            "gold": 50,  # Увеличим стартовое золото
             "inventory": {"Малое зелье лечения": 2},
             "quests": {},
+            "last_casino_play": None
         }
         save_players()
     return players[uid]
@@ -194,73 +202,98 @@ def ability_description(class_name: str) -> str:
     if class_name == "🕵️ Вор":
         return "Теневая атака: удар, игнорирующий защиту, один раз за бой."
     return ""
-# ----------------------------- Казино --------------------------------
 
-CASINO_GAMES = {
-    "double": {"name": "🎯 Удвоение", "multiplier": 2, "win_chance": 0.48},
-    "dice": {"name": "🎲 Кости", "multiplier": 1.5, "win_chance": 0.5},
-    "roulette": {"name": "🎡 Рулетка", "multiplier": 2, "win_chance": 0.47}
-}
+def build_battle_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗡️ Атака", callback_data="battle:attack"),
+         InlineKeyboardButton("✨ Способность", callback_data="battle:ability")],
+        [InlineKeyboardButton("🧪 Зелье", callback_data="battle:potion"),
+         InlineKeyboardButton("🏃 Бег", callback_data="battle:run")],
+    ])
 
-def play_casino(player: Dict[str, Any], game_type: str, bet: int) -> Dict[str, Any]:
-    """Логика игры в казино"""
-    result = {
-        "success": False,
-        "message": "",
-        "new_balance": player["gold"]
-    }
+def build_shop_kb() -> InlineKeyboardMarkup:
+    buttons = []
+    for item_name, meta in SHOP_ITEMS.items():
+        buttons.append([InlineKeyboardButton(f"Купить: {item_name} ({meta['price']}💰)", callback_data=f"shop:buy:{item_name}")])
+    buttons.append([InlineKeyboardButton("Закрыть", callback_data="shop:close")])
+    return InlineKeyboardMarkup(buttons)
+
+def battle_text(player: Dict[str, Any], enemy: Dict[str, Any], log: str = "") -> str:
+    return (
+        f"⚔️ Бой: {enemy['name']}\n"
+        f"Враг HP: {enemy['hp']}/{enemy['max_hp']}\n"
+        f"Ты HP: {player['hp']}/{player['max_hp']}\n"
+        f"Атака/Защита: {player['attack']}/{player['defense']}\n\n"
+        f"{log}"
+    )
+
+def build_casino_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
+    buttons = []
+    for game_type, game in CASINO_GAMES.items():
+        can_play = player["gold"] >= game["min_bet"]
+        text = f"{game['name']} (от {game['min_bet']}💰)" if can_play else f"{game['name']} ❌"
+        callback = f"casino:{game_type}" if can_play else "casino:no_money"
+        buttons.append([InlineKeyboardButton(text, callback_data=callback)])
+    buttons.append([InlineKeyboardButton("💰 Баланс", callback_data="casino:balance")])
+    buttons.append([InlineKeyboardButton("🚪 Выход", callback_data="casino:exit")])
+    return InlineKeyboardMarkup(buttons)
+
+def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[str, Any]:
+    """Основная логика игры в казино"""
+    game = CASINO_GAMES[game_type]
     
-    # Проверка кулдауна (1 минута)
-    if "last_casino_play" in player:
-        last_play = datetime.fromisoformat(player["last_casino_play"])
-        cooldown = 60
-        elapsed = (datetime.now() - last_play).total_seconds()
-        if elapsed < cooldown:
-            remaining = int(cooldown - elapsed)
-            result["message"] = f"⏳ Подождите {remaining} сек. перед следующей игрой"
-            return result
+    if bet < game["min_bet"]:
+        return {"success": False, "message": f"❌ Минимальная ставка: {game['min_bet']} золота"}
     
     if player["gold"] < bet:
-        result["message"] = "❌ Недостаточно золота!"
-        return result
+        return {"success": False, "message": "❌ Недостаточно золота!"}
     
-    game = CASINO_GAMES[game_type]
+    # Проверка кулдауна (раз в 30 секунд)
+    last_play = player.get("last_casino_play")
+    if last_play:
+        last_play = datetime.fromisoformat(last_play)
+        elapsed = (datetime.now() - last_play).total_seconds()
+        if elapsed < 30:
+            return {"success": False, "message": f"⏳ Подождите {int(30 - elapsed)} секунд перед следующей игрой"}
+    
     player["gold"] -= bet
     player["last_casino_play"] = datetime.now().isoformat()
     
-    if random.random() < game["win_chance"]:
-        win_amount = int(bet * game["multiplier"])
-        player["gold"] += win_amount
-        result.update({
-            "success": True,
-            "message": f"🎉 Победа! Вы выиграли {win_amount} золота!",
-            "new_balance": player["gold"],
-            "won": win_amount
-        })
-    else:
-        result.update({
-            "message": f"💸 Проигрыш! Вы потеряли {bet} золота.",
-            "new_balance": player["gold"]
-        })
+    # Логика игр
+    if game_type == "double":
+        if random.random() < game["win_chance"]:
+            prize = bet * game["multiplier"]
+            player["gold"] += prize
+            return {"success": True, "message": f"🎉 Победа! Выиграли {prize} золота!", "prize": prize}
+        return {"success": False, "message": f"💸 Проигрыш! Потеряли {bet} золота."}
+    
+    elif game_type == "dice":
+        player_roll = random.randint(1, 6)
+        casino_roll = random.randint(1, 6)
+        if player_roll > casino_roll:
+            prize = int(bet * game["multiplier"])
+            player["gold"] += prize
+            return {"success": True, "message": f"🎲 Вы: {player_roll} | Казино: {casino_roll}\n🏆 Выиграли {prize} золота!"}
+        elif player_roll == casino_roll:
+            player["gold"] += bet
+            return {"success": None, "message": f"🎲 Вы: {player_roll} | Казино: {casino_roll}\n🤝 Ничья! Ставка возвращена."}
+        else:
+            return {"success": False, "message": f"🎲 Вы: {player_roll} | Казино: {casino_roll}\n💸 Проиграли {bet} золота."}
+    
+    elif game_type == "roulette":
+        number = random.randint(0, 36)
+        color = "🔴" if number % 2 == 1 else "⚫" if number != 0 else "🟢"
+        if number == 0:
+            return {"success": False, "message": f"🎡 Выпало: {color}0\n💸 Проиграли {bet} золота!"}
+        elif (color == "🔴" and random.random() < game["win_chance"]) or (color == "⚫" and random.random() < game["win_chance"]):
+            prize = bet * game["multiplier"]
+            player["gold"] += prize
+            return {"success": True, "message": f"🎡 Выпало: {color}{number}\n🎉 Выиграли {prize} золота!"}
+        else:
+            return {"success": False, "message": f"🎡 Выпало: {color}{number}\n💸 Проиграли {bet} золота."}
     
     save_players()
-    return result
-
-def build_casino_kb(balance: int) -> InlineKeyboardMarkup:
-    """Клавиатура для казино"""
-    buttons = [
-        [
-            InlineKeyboardButton("🎯 Удвоение (x2)", callback_data="casino:double"),
-            InlineKeyboardButton("🎲 Кости (x1.5)", callback_data="casino:dice")
-        ],
-        [
-            InlineKeyboardButton("🎡 Рулетка (x2)", callback_data="casino:roulette"),
-            InlineKeyboardButton("💎 Премиум игры", callback_data="casino:premium")
-        ],
-        [InlineKeyboardButton(f"💰 Баланс: {balance}", callback_data="casino:balance")],
-        [InlineKeyboardButton("🚪 Выход", callback_data="casino:exit")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    return {"success": False, "message": "⚠️ Ошибка в игре"}
 
 # ----------------------------- Хендлеры команд -------------------------------
 
@@ -377,99 +410,6 @@ async def quests_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
         reply_markup=MAIN_KB
     )
-# ----------------------------- Казино команды -------------------------------
-
-async def casino_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Меню казино"""
-    uid = str(update.effective_user.id)
-    if uid not in players:
-        await update.message.reply_text("Сначала нажми /start")
-        return
-    
-    p = players[uid]
-    await update.message.reply_text(
-        "🎰 <b>Добро пожаловать в Казино Удачи!</b>\n\n"
-        f"💰 Ваш баланс: <b>{p['gold']}</b> золота\n"
-        "🎮 Выберите игру из меню ниже:",
-        parse_mode="HTML",
-        reply_markup=build_casino_kb(p["gold"])
-    )
-
-async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора игры в казино"""
-    query = update.callback_query
-    await query.answer()
-    
-    uid = str(query.from_user.id)
-    if uid not in players:
-        await query.edit_message_text("❌ Сначала начните игру (/start)")
-        return
-    
-    p = players[uid]
-    data = query.data.split(":")
-    
-    if data[1] == "exit":
-        await query.edit_message_text("🚪 Вы покинули казино. Удачи в приключениях!")
-        return
-    elif data[1] == "balance":
-        await query.answer(f"💰 Ваш баланс: {p['gold']} золота", show_alert=True)
-        return
-    elif data[1] == "premium":
-        await query.answer("⚡ Премиум игры скоро будут доступны!", show_alert=True)
-        return
-    
-    # Автоматическая ставка (10% от баланса, мин 5, макс 100)
-    bet = max(5, min(100, p["gold"] // 10))
-    
-    if p["gold"] < 5:
-        await query.edit_message_text(
-            "❌ У вас недостаточно золота для игры!\n"
-            f"Минимальная ставка: 5 золота (у вас: {p['gold']})\n\n"
-            "Заработать золото можно в приключениях (/adventure)",
-            reply_markup=build_casino_kb(p["gold"])
-        )
-        return
-    
-    result = play_casino(p, data[1], bet)
-    
-    if "Подождите" in result["message"]:
-        await query.answer(result["message"], show_alert=True)
-        return
-    
-    await query.edit_message_text(
-        f"🎰 <b>{CASINO_GAMES[data[1]]['name']}</b>\n"
-        f"💵 Ставка: <b>{bet}</b> золота\n\n"
-        f"{result['message']}\n\n"
-        f"💰 Новый баланс: <b>{result['new_balance']}</b> золота\n\n"
-        "🎮 Хотите сыграть ещё?",
-        parse_mode="HTML",
-        reply_markup=build_casino_kb(result["new_balance"])
-    )
-# ----------------------------- Приключения/События ---------------------------
-
-def build_battle_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗡️ Атака", callback_data="battle:attack"),
-         InlineKeyboardButton("✨ Способность", callback_data="battle:ability")],
-        [InlineKeyboardButton("🧪 Зелье", callback_data="battle:potion"),
-         InlineKeyboardButton("🏃 Бег", callback_data="battle:run")],
-    ])
-
-def build_shop_kb() -> InlineKeyboardMarkup:
-    buttons = []
-    for item_name, meta in SHOP_ITEMS.items():
-        buttons.append([InlineKeyboardButton(f"Купить: {item_name} ({meta['price']}💰)", callback_data=f"shop:buy:{item_name}")])
-    buttons.append([InlineKeyboardButton("Закрыть", callback_data="shop:close")])
-    return InlineKeyboardMarkup(buttons)
-
-def battle_text(player: Dict[str, Any], enemy: Dict[str, Any], log: str = "") -> str:
-    return (
-        f"⚔️ Бой: {enemy['name']}\n"
-        f"Враг HP: {enemy['hp']}/{enemy['max_hp']}\n"
-        f"Ты HP: {player['hp']}/{player['max_hp']}\n"
-        f"Атака/Защита: {player['attack']}/{player['defense']}\n\n"
-        f"{log}"
-    )
 
 async def adventure_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -580,6 +520,129 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Ты купил и использовал: {item_name}. Твоя сила растёт! Золото: {p['gold']}.",
                 reply_markup=build_shop_kb()  # Оставляем магазин открытым
             )
+
+async def casino_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /casino"""
+    uid = str(update.effective_user.id)
+    if uid not in players:
+        await update.message.reply_text("Сначала начните игру командой /start")
+        return
+    
+    p = players[uid]
+    await update.message.reply_text(
+        f"🎰 <b>Добро пожаловать в казино!</b>\n"
+        f"💰 Ваш баланс: {p['gold']} золота\n\n"
+        "🎮 Игры и их расценки (НЕ НАЖИМАТЬ НА КНОПКИ В ЭТОМ МЕНЮ):",
+        "ВАЖНО: напишите в следующем сообщении кол-во золота, которое вы хотите поставить, а там уже нажимайте на кнопки!:",
+        parse_mode="HTML",
+        reply_markup=build_casino_kb(p)
+    )
+
+async def casino_bet_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ввода ставки для казино"""
+    uid = str(update.effective_user.id)
+    if uid not in players:
+        await update.message.reply_text("Сначала начните игру командой /start")
+        return
+    
+    p = players[uid]
+    text = update.message.text.strip()
+    
+    try:
+        if "%" in text:
+            percent = float(text.replace("%", "").strip())
+            if percent <= 0 or percent > 100:
+                raise ValueError
+            bet = int(p["gold"] * (percent / 100))
+        else:
+            bet = int(text)
+    except ValueError:
+        await update.message.reply_text("❌ Введите число или процент (например: 50 или 25%)")
+        return
+    
+    min_bet = min(game["min_bet"] for game in CASINO_GAMES.values())
+    if bet < min_bet:
+        await update.message.reply_text(f"❌ Минимальная ставка: {min_bet} золота")
+        return
+    if bet > p["gold"]:
+        await update.message.reply_text(f"❌ Недостаточно золота. Ваш баланс: {p['gold']}")
+        return
+    
+    context.user_data["casino_bet"] = bet
+    await show_casino_games(update, context)
+
+async def show_casino_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показ игр после ввода ставки"""
+    bet = context.user_data["casino_bet"]
+    
+    buttons = [
+        [InlineKeyboardButton(CASINO_GAMES["double"]["name"], callback_data="casino:double")],
+        [InlineKeyboardButton(CASINO_GAMES["dice"]["name"], callback_data="casino:dice")],
+        [InlineKeyboardButton(CASINO_GAMES["roulette"]["name"], callback_data="casino:roulette")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="casino:exit")]
+    ]
+    
+    await update.message.reply_text(
+        f"💰 Ваша ставка: <b>{bet}</b> золота\n"
+        "🎮 Выберите игру:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик inline-кнопок казино"""
+    query = update.callback_query
+    await query.answer()
+    
+    uid = str(query.from_user.id)
+    if uid not in players:
+        await query.edit_message_text("❌ Сначала начните игру (/start)")
+        return
+    
+    p = players[uid]
+    data = query.data.split(":")
+    
+    if data[1] == "exit":
+        await query.edit_message_text("🚪 Вы покинули казино. Удачи в приключениях!")
+        return
+    elif data[1] == "balance":
+        await query.answer(f"Ваш баланс: {p['gold']} золота", show_alert=True)
+        return
+    elif data[1] == "no_money":
+        await query.answer("❌ Недостаточно золота для этой игры!", show_alert=True)
+        return
+    
+    # Определяем ставку
+    bet = context.user_data.get("casino_bet", 10)  # По умолчанию 10, если ставка не была установлена
+    game_type = data[1]
+    
+    result = play_casino_game(p, game_type, bet)
+    save_players()
+    
+    if "Подождите" in result["message"]:
+        await query.answer(result["message"], show_alert=True)
+        return
+    
+    # Формируем полное сообщение с результатом
+    message = (
+        f"🎰 <b>{CASINO_GAMES[game_type]['name']}</b>\n"
+        f"💵 Ставка: <b>{bet}</b> золота\n\n"
+        f"{result['message']}\n\n"
+        f"💰 Текущий баланс: <b>{p['gold']}</b> золота\n\n"
+    )
+    
+    if result["success"] is False:
+        message += "😔 Не повезло... Попробуйте ещё раз!"
+    elif result["success"] is True:
+        message += "🎉 Отличный результат! Хотите сыграть ещё?"
+    else:
+        message += "🤝 Ничья! Попробуйте ещё раз."
+    
+    await query.edit_message_text(
+        message,
+        parse_mode="HTML",
+        reply_markup=build_casino_kb(p)
+    )
 
 # ----------------------------- Бой: callback-и -------------------------------
 
@@ -748,7 +811,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     load_players()
-    app = ApplicationBuilder().token("YOUR_TOKEN_BOT").build()
+    app = ApplicationBuilder().token("").build()
 
     # Основные команды
     app.add_handler(CommandHandler("start", start))
@@ -760,6 +823,9 @@ def main():
     app.add_handler(CommandHandler("adventure", adventure_cmd))
     app.add_handler(CommandHandler("shop", shop_cmd))
     app.add_handler(CommandHandler("casino", casino_cmd))
+    
+    # Обработчики сообщений с ставками для казино
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(\d+|(\d+%)$)'), casino_bet_input))
     
     # Обработчики callback'ов
     app.add_handler(CallbackQueryHandler(battle_callback, pattern=r"^battle:"))
