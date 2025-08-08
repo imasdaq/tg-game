@@ -584,7 +584,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     load_players()
-    app = ApplicationBuilder().token("").build()
+    app = ApplicationBuilder().token("YOUR_BOT_TOKEN_HERE").build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
