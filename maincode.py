@@ -740,7 +740,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     load_players()
-    app = ApplicationBuilder().token("8261910418:AAEF8cwJJ1KlnZS0sweMEtpSXUvAH_KAoA0").build()
+    app = ApplicationBuilder().token("").build()
 
     # Основные команды
     app.add_handler(CommandHandler("start", start))
