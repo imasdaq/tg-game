@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List
 from telegram import (
     Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 )
+from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
@@ -17,6 +18,9 @@ DATA_FILE = "game_data.json"
 
 # Хранилище игроков: key = str(user_id), value = dict
 players: Dict[str, Dict[str, Any]] = {}
+
+# Хранилище кланов: key = str(clan_name), value = dict
+clans: Dict[str, Dict[str, Any]] = {}
 
 # Клавиатуры
 CLASS_KB = ReplyKeyboardMarkup(
@@ -33,6 +37,28 @@ MAIN_KB = ReplyKeyboardMarkup(
      ["🐾 Питомцы", "⚙️ Помощь"]],
     resize_keyboard=True
 )
+
+# ----------------------------- Безопасные помощники редактирования сообщений -----------------------------
+
+async def safe_edit_message_text(query, text: str, parse_mode: Optional[str] = None, reply_markup: Optional[InlineKeyboardMarkup] = None):
+    """Безопасно редактирует текст сообщения. Игнорирует ошибку 'Message is not modified'."""
+    try:
+        await query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except BadRequest as exc:
+        # Сообщение не менялось — просто игнорируем, чтобы не падать
+        if "Message is not modified" in str(exc):
+            return
+        # Пробрасываем остальные ошибки
+        raise
+
+async def safe_edit_message_reply_markup(query, reply_markup: Optional[InlineKeyboardMarkup] = None):
+    """Безопасно редактирует inline-клавиатуру сообщения. Игнорирует ошибку 'Message is not modified'."""
+    try:
+        await query.edit_message_reply_markup(reply_markup=reply_markup)
+    except BadRequest as exc:
+        if "Message is not modified" in str(exc):
+            return
+        raise
 
 # Базовые параметры классов
 CLASS_STATS = {
@@ -51,6 +77,13 @@ SHOP_ITEMS = {
     "Свиток телепортации": {"price": 25, "type": "consumable", "effect": {"escape": True}, "emoji": "📜"},
     "Амулет защиты": {"price": 100, "type": "equipment", "effect": {"defense_plus": 2}, "emoji": "🔮"},
     "Меч дракона": {"price": 200, "type": "equipment", "effect": {"attack_plus": 3}, "emoji": "⚔️"},
+    # Питомцы в магазине
+    "🐱 Кот": {"price": 150, "type": "pet", "pet_id": "cat", "emoji": "🐱"},
+    "🐰 Кролик": {"price": 200, "type": "pet", "pet_id": "rabbit", "emoji": "🐰"},
+    "🦉 Сова": {"price": 300, "type": "pet", "pet_id": "owl", "emoji": "🦉"},
+    "🐺 Волк": {"price": 400, "type": "pet", "pet_id": "wolf", "emoji": "🐺"},
+    "🦅 Феникс": {"price": 800, "type": "pet", "pet_id": "phoenix", "emoji": "🦅"},
+    "🐉 Дракон": {"price": 1000, "type": "pet", "pet_id": "dragon", "emoji": "🐉"},
 }
 
 # Расширенные игры казино
@@ -241,6 +274,11 @@ def check_achievements(player: Dict[str, Any], action: str, value: Any = None) -
             earned.append("pvp_champion")
     
     elif action == "pet_obtained" and "pet_lover" not in player["achievements"]:
+        if len(player["pets"]) >= 3:
+            player["achievements"]["pet_lover"] = {"earned": True, "date": datetime.now().isoformat()}
+            earned.append("pet_lover")
+    
+    elif action == "pet_check" and "pet_lover" not in player["achievements"]:
         if len(player["pets"]) >= 3:
             player["achievements"]["pet_lover"] = {"earned": True, "date": datetime.now().isoformat()}
             earned.append("pet_lover")
@@ -608,11 +646,23 @@ def build_battle_kb() -> InlineKeyboardMarkup:
          InlineKeyboardButton("🏃 Бег", callback_data="battle:run")],
     ])
 
-def build_shop_kb() -> InlineKeyboardMarkup:
+def build_shop_kb(player: Dict[str, Any] = None) -> InlineKeyboardMarkup:
     buttons = []
     for item_name, meta in SHOP_ITEMS.items():
         emoji = meta.get("emoji", "📦")
-        buttons.append([InlineKeyboardButton(f"{emoji} Купить: {item_name} ({meta['price']}💰)", callback_data=f"shop:buy:{item_name}")])
+        price = meta['price']
+        
+        # Для питомцев показываем статус владения
+        if meta["type"] == "pet":
+            pet_id = meta["pet_id"]
+            if player and pet_id in player.get("pets", []):
+                # У игрока уже есть этот питомец
+                buttons.append([InlineKeyboardButton(f"{emoji} {item_name} ✅ (Уже есть)", callback_data="shop:already_owned")])
+            else:
+                buttons.append([InlineKeyboardButton(f"{emoji} Купить: {item_name} ({price}💰)", callback_data=f"shop:buy:{item_name}")])
+        else:
+            buttons.append([InlineKeyboardButton(f"{emoji} Купить: {item_name} ({price}💰)", callback_data=f"shop:buy:{item_name}")])
+    
     buttons.append([InlineKeyboardButton("Закрыть", callback_data="shop:close")])
     return InlineKeyboardMarkup(buttons)
 
@@ -640,15 +690,22 @@ def build_casino_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 def build_casino_games_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(CASINO_GAMES["double"]["name"], callback_data="casino:double"),
-         InlineKeyboardButton(CASINO_GAMES["dice"]["name"], callback_data="casino:dice")],
-        [InlineKeyboardButton(CASINO_GAMES["roulette"]["name"], callback_data="casino:roulette"),
-         InlineKeyboardButton(CASINO_GAMES["slots"]["name"], callback_data="casino:slots")],
-        [InlineKeyboardButton(CASINO_GAMES["blackjack"]["name"], callback_data="casino:blackjack")],
-        [InlineKeyboardButton("🔁 Сменить ставку", callback_data="casino:change_bet")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="casino:exit")],
+    """Клавиатура с играми казино"""
+    keyboard = []
+    for game_id, game_info in CASINO_GAMES.items():
+        keyboard.append([InlineKeyboardButton(
+            f"{game_info['emoji']} {game_info['name']} ({int(game_info['win_chance'] * 100)}% | x{game_info['multiplier']})",
+            callback_data=f"casino:{game_id}"
+        )])
+    
+    # Кнопки управления
+    keyboard.append([
+        InlineKeyboardButton("💰 Баланс", callback_data="casino:balance"),
+        InlineKeyboardButton("💸 Изменить ставку", callback_data="casino:change_bet")
     ])
+    keyboard.append([InlineKeyboardButton("🚪 Выйти", callback_data="casino:exit")])
+    
+    return InlineKeyboardMarkup(keyboard)
 
 def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[str, Any]:
     """Основная логика игры в казино"""
@@ -982,20 +1039,20 @@ async def clans_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             if clan["leader"] == uid:
-                text += "👑 Вы лидер клана\n"
-                text += "Используйте /clan_leave чтобы покинуть клан"
+                text += "👑 Вы лидер клана"
             else:
-                text += "👤 Вы участник клана\n"
-                text += "Используйте /clan_leave чтобы покинуть клан"
+                text += "👤 Вы участник клана"
         else:
             text = "❌ Ошибка: клан не найден"
+            p.pop("clan", None)  # Удаляем несуществующий клан
+            save_players()
     else:
         # Показать список кланов
         if not clans:
             text = (
                 "🏰 <b>Кланы:</b>\n\n"
                 "Пока нет созданных кланов.\n"
-                "Используйте /clan_create [название] чтобы создать клан!"
+                "Создайте свой клан!"
             )
         else:
             text = "🏰 <b>Доступные кланы:</b>\n\n"
@@ -1004,7 +1061,10 @@ async def clans_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += f"👥 Участников: {len(clan['members'])}/20\n"
                 text += f"👑 Лидер: {players[clan['leader']]['name']}\n\n"
     
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_KB)
+    # Создаем клавиатуру с кнопками
+    keyboard = build_clans_keyboard(p)
+    
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 async def pvp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """PvP система"""
@@ -1216,47 +1276,58 @@ async def adventure_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def shop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Лавка торговца:", reply_markup=build_shop_kb())
+    uid = str(update.effective_user.id)
+    if uid not in players:
+        await update.message.reply_text("Сначала нажми /start")
+        return
+    
+    p = players[uid]
+    await update.message.reply_text("Лавка торговца:", reply_markup=build_shop_kb(p))
 
 async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     uid = str(query.from_user.id)
     if uid not in players:
-        await query.edit_message_text("Сначала нажми /start")
+        await safe_edit_message_text(query, "Сначала нажми /start")
         return
     
     p = players[uid]
-    data = query.data # shop:buy:ITEM or shop:close
+    data = query.data # shop:buy:ITEM, shop:close, or shop:already_owned
 
     if data == "shop:close":
         context.user_data.pop("merchant_active", None)
-        await query.edit_message_text("Торговец уходит в туман...")
+        await safe_edit_message_text(query, "Торговец уходит в туман...")
+        return
+    
+    if data == "shop:already_owned":
+        await query.answer("У тебя уже есть этот питомец!")
         return
 
     _, action, item_name = data.split(":", 2)
     if action == "buy":
         if item_name not in SHOP_ITEMS:
-            await query.edit_message_text("Такого товара нет.")
+            await safe_edit_message_text(query, "Такого товара нет.")
             return
         
         price = SHOP_ITEMS[item_name]["price"]
         if p["gold"] < price:
-            await query.edit_message_text(f"Не хватает золота. Нужно {price}💰, у тебя {p['gold']}💰.")
+            await safe_edit_message_text(query, f"Не хватает золота. Нужно {price}💰, у тебя {p['gold']}💰.")
             return
 
         p["gold"] -= price
-        effect = SHOP_ITEMS[item_name]["effect"]
         emoji = SHOP_ITEMS[item_name].get("emoji", "📦")
         
         if SHOP_ITEMS[item_name]["type"] == "consumable":
             add_item(p, item_name, 1)
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 f"{emoji} Ты купил: {item_name}. В инвентаре пополнение! Золото: {p['gold']}.",
-                reply_markup=build_shop_kb()  # Оставляем магазин открытым
+                reply_markup=build_shop_kb(p)
             )
         elif SHOP_ITEMS[item_name]["type"] == "equipment":
             # Применяем эффекты экипировки
+            effect = SHOP_ITEMS[item_name]["effect"]
             if "attack_plus" in effect:
                 p["attack"] += effect["attack_plus"]
             if "defense_plus" in effect:
@@ -1264,10 +1335,32 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "luck_plus" in effect:
                 p["luck"] = p.get("luck", 0) + effect["luck_plus"]
             save_players()
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 f"{emoji} Ты купил и экипировал: {item_name}. Твоя сила растёт! Золото: {p['gold']}.",
-                reply_markup=build_shop_kb()  # Оставляем магазин открытым
+                reply_markup=build_shop_kb(p)
             )
+        elif SHOP_ITEMS[item_name]["type"] == "pet":
+            # Покупаем питомца
+            pet_id = SHOP_ITEMS[item_name]["pet_id"]
+            if pet_id not in p.get("pets", []):
+                p.setdefault("pets", []).append(pet_id)
+                save_players()
+                # Проверяем достижения
+                check_achievements(p, "pet_check", len(p["pets"]))
+                await safe_edit_message_text(
+                    query,
+                    f"{emoji} Ты купил питомца: {item_name}! Теперь у тебя {len(p['pets'])} питомцев. Золото: {p['gold']}.",
+                    reply_markup=build_shop_kb(p)
+                )
+            else:
+                # Возвращаем золото, если питомец уже есть
+                p["gold"] += price
+                await safe_edit_message_text(
+                    query,
+                    f"❌ У тебя уже есть питомец {item_name}! Золото возвращено. Золото: {p['gold']}.",
+                    reply_markup=build_shop_kb(p)
+                )
 
 async def casino_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /casino"""
@@ -1347,7 +1440,7 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     uid = str(query.from_user.id)
     if uid not in players:
-        await query.edit_message_text("❌ Сначала начните игру (/start)")
+        await safe_edit_message_text(query, "❌ Сначала начните игру (/start)")
         return
     
     p = players[uid]
@@ -1356,12 +1449,13 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data[1] == "exit":
         context.user_data.pop("casino_bet", None)
         context.user_data.pop("awaiting_casino_bet", None)
-        await query.edit_message_text("🚪 Вы покинули казино. Удачи в приключениях!")
+        await safe_edit_message_text(query, "🚪 Вы покинули казино. Удачи в приключениях!")
         return
     elif data[1] == "change_bet":
         context.user_data.pop("casino_bet", None)
         context.user_data["awaiting_casino_bet"] = True
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             f"✍️ Введите новую сумму ставки (число) или процент от баланса (например, 25%):\n"
             f"💰 Ваш текущий баланс: {p['gold']} золота",
             parse_mode="HTML"
@@ -1384,17 +1478,24 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = play_casino_game(p, game_type, bet)
     save_players()
     
-    if "Подождите" in result["message"]:
-        await query.answer(result["message"], show_alert=True)
-        return
-    
-    # Формируем полное сообщение с результатом
+    # Формируем полное сообщение (также используем при кулдауне)
     message = (
         f"🎰 <b>{CASINO_GAMES[game_type]['name']}</b>\n"
         f"💵 Ставка: <b>{bet}</b> золота\n\n"
         f"{result['message']}\n\n"
         f"💰 Текущий баланс: <b>{p['gold']}</b> золота\n\n"
     )
+    
+    if "Подождите" in result["message"]:
+        # Показываем алерт и одновременно обновляем текст сообщения с подсказкой
+        await query.answer(result["message"], show_alert=True)
+        await safe_edit_message_text(
+            query,
+            message,
+            parse_mode="HTML",
+            reply_markup=build_casino_games_kb()
+        )
+        return
     
     if result["success"] is False:
         message += "😔 Не повезло... Попробуйте ещё раз!"
@@ -1403,11 +1504,207 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message += "🤝 Ничья! Попробуйте ещё раз."
     
-    await query.edit_message_text(
+    await safe_edit_message_text(
+        query,
         message,
         parse_mode="HTML",
         reply_markup=build_casino_games_kb()
     )
+
+async def clan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик inline-кнопок кланов"""
+    query = update.callback_query
+    await query.answer()
+    
+    uid = str(query.from_user.id)
+    if uid not in players:
+        await safe_edit_message_text(query, "❌ Сначала начните игру (/start)")
+        return
+    
+    p = players[uid]
+    data = query.data.split(":")
+    action = data[1]
+    
+    if action == "create":
+        # Начинаем процесс создания клана
+        context.user_data["clan_creation"] = True
+        await safe_edit_message_text(
+            query,
+            "🏗️ <b>Создание клана</b>\n\n"
+            "✍️ Введите название клана (от 3 до 20 символов):\n\n"
+            "ℹ️ Название должно быть уникальным и содержать только буквы, цифры и пробелы.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([])
+        )
+        return
+    
+    elif action == "join":
+        if len(data) < 3:
+            await query.answer("❌ Ошибка: не указан клан", show_alert=True)
+            return
+        
+        clan_name = data[2]
+        if clan_name not in clans:
+            await query.answer("❌ Клан не найден", show_alert=True)
+            return
+        
+        if p.get("clan"):
+            await query.answer("❌ Вы уже состоите в клане", show_alert=True)
+            return
+        
+        if join_clan(clan_name, uid):
+            save_players()
+            save_clans()
+            await query.answer(f"✅ Вы присоединились к клану {clan_name}!", show_alert=True)
+        else:
+            await query.answer("❌ Не удалось присоединиться к клану", show_alert=True)
+        
+        # Обновляем сообщение
+        await refresh_clan_message(query, p)
+        return
+    
+    elif action == "leave":
+        if not p.get("clan"):
+            await query.answer("❌ Вы не состоите в клане", show_alert=True)
+            return
+        
+        clan_name = p["clan"]
+        if leave_clan(uid):
+            save_players()
+            save_clans()
+            await query.answer(f"✅ Вы покинули клан {clan_name}", show_alert=True)
+        else:
+            await query.answer("❌ Не удалось покинуть клан", show_alert=True)
+        
+        # Обновляем сообщение
+        await refresh_clan_message(query, p)
+        return
+    
+    elif action == "refresh":
+        # Обновляем сообщение
+        await refresh_clan_message(query, p)
+        return
+    
+    elif action == "main_menu":
+        # Возвращаемся в главное меню
+        await query.message.reply_text(
+            "🏠 <b>Главное меню</b>\n\n"
+            "Выберите действие:",
+            parse_mode="HTML",
+            reply_markup=MAIN_KB
+        )
+        await query.delete_message()
+        return
+
+async def handle_clan_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка создания клана"""
+    msg = update.message
+    uid = str(update.effective_user.id)
+    
+    if uid not in players:
+        await msg.reply_text("❌ Сначала начните игру (/start)")
+        return
+    
+    p = players[uid]
+    clan_name = msg.text.strip()
+    
+    # Проверяем, что игрок не в клане
+    if p.get("clan"):
+        context.user_data.pop("clan_creation", None)
+        await msg.reply_text("❌ Вы уже состоите в клане!", reply_markup=MAIN_KB)
+        return
+    
+    # Валидация названия клана
+    if len(clan_name) < 3 or len(clan_name) > 20:
+        await msg.reply_text(
+            "❌ Название клана должно быть от 3 до 20 символов.\n"
+            "Попробуйте ещё раз:",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Проверяем, что название содержит только допустимые символы
+    if not clan_name.replace(" ", "").replace("-", "").replace("_", "").isalnum():
+        await msg.reply_text(
+            "❌ Название клана может содержать только буквы, цифры, пробелы, дефисы и подчеркивания.\n"
+            "Попробуйте ещё раз:",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Проверяем уникальность названия
+    if clan_name in clans:
+        await msg.reply_text(
+            f"❌ Клан с названием '{clan_name}' уже существует.\n"
+            "Попробуйте другое название:",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Создаем клан
+    if create_clan(clan_name, uid, p["name"]):
+        save_players()
+        save_clans()
+        context.user_data.pop("clan_creation", None)
+        
+        await msg.reply_text(
+            f"🎉 <b>Клан создан!</b>\n\n"
+            f"🏰 Название: {clan_name}\n"
+            f"👑 Лидер: {p['name']}\n"
+            f"👥 Участников: 1/20\n\n"
+            f"Теперь другие игроки могут присоединиться к вашему клану!",
+            parse_mode="HTML",
+            reply_markup=MAIN_KB
+        )
+    else:
+        await msg.reply_text(
+            "❌ Не удалось создать клан. Попробуйте ещё раз:",
+            parse_mode="HTML"
+        )
+
+async def refresh_clan_message(query, player):
+    """Обновляет сообщение с информацией о кланах"""
+    if player.get("clan"):
+        # Показать информацию о клане
+        clan_name = player["clan"]
+        if clan_name in clans:
+            clan = clans[clan_name]
+            text = (
+                f"🏰 <b>Клан: {clan['name']}</b>\n\n"
+                f"👑 Лидер: {players[clan['leader']]['name']}\n"
+                f"👥 Участников: {len(clan['members'])}/20\n"
+                f"📊 Уровень: {clan['level']}\n"
+                f"⭐ XP: {clan['xp']}\n"
+                f"📝 Описание: {clan['description']}\n\n"
+            )
+            
+            if clan["leader"] == str(query.from_user.id):
+                text += "👑 Вы лидер клана"
+            else:
+                text += "👤 Вы участник клана"
+        else:
+            text = "❌ Ошибка: клан не найден"
+            player.pop("clan", None)  # Удаляем несуществующий клан
+            save_players()
+    else:
+        # Показать список кланов
+        if not clans:
+            text = (
+                "🏰 <b>Кланы:</b>\n\n"
+                "Пока нет созданных кланов.\n"
+                "Создайте свой клан!"
+            )
+        else:
+            text = "🏰 <b>Доступные кланы:</b>\n\n"
+            for clan_name, clan in clans.items():
+                text += f"{clan['color']} <b>{clan['name']}</b>\n"
+                text += f"👥 Участников: {len(clan['members'])}/20\n"
+                text += f"👑 Лидер: {players[clan['leader']]['name']}\n\n"
+    
+    # Создаем клавиатуру с кнопками
+    keyboard = build_clans_keyboard(player)
+    
+    await safe_edit_message_text(query, text, parse_mode="HTML", reply_markup=keyboard)
 
 # ----------------------------- Бой: callback-и -------------------------------
 
@@ -1416,13 +1713,13 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     uid = str(query.from_user.id)
     if uid not in players:
-        await query.edit_message_text("Сначала нажми /start")
+        await safe_edit_message_text(query, "Сначала нажми /start")
         return
     
     p = players[uid]
     state = context.user_data.get("battle")
     if not state:
-        await query.edit_message_text("Сейчас ты не в бою.")
+        await safe_edit_message_text(query, "Сейчас ты не в бою.")
         return
 
     enemy = state["enemy"]
@@ -1430,7 +1727,7 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Получаем характеристики с учетом бонусов питомцев
     stats_with_pets = get_player_stats_with_pets(p)
-    
+
     log = ""
     if action == "battle:attack":
         dmg = dmg_roll(stats_with_pets["attack"], enemy["defense"])
@@ -1464,7 +1761,7 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log += "У тебя нет Малых зелий лечения.\n"
     elif action == "battle:run":
         if random.random() < 0.6:
-            await query.edit_message_text("Ты успешно сбежал с поля боя.")
+            await safe_edit_message_text(query, "Ты успешно сбежал с поля боя.")
             context.user_data.pop("battle", None)
             return
         else:
@@ -1487,9 +1784,7 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             quest_text = f"\nКвест '{q['title']}': прогресс {q['progress']}/{q['required']}."
             save_players()
 
-        await query.edit_message_text(
-            f"Ты победил {enemy['name']}! {loot_text}{quest_text}"
-        )
+        await safe_edit_message_text(query, f"Ты победил {enemy['name']}! {loot_text}{quest_text}")
         context.user_data.pop("battle", None)
         return
 
@@ -1506,7 +1801,8 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p["gold"] -= loss_gold
         p["hp"] = max(1, p["max_hp"] // 2)
         save_players()
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             f"Ты пал в бою... Потеряно {loss_gold} золота. "
             f"Ты приходишь в себя с {p['hp']}/{p['max_hp']} HP."
         )
@@ -1515,7 +1811,8 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Обновляем текст боя
     try:
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             battle_text(p, enemy, log),
             reply_markup=build_battle_kb()
         )
@@ -1537,6 +1834,11 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем, ожидаем ли мы ввод ставки для казино
     if context.user_data.get("awaiting_casino_bet"):
         await casino_bet_input(update, context)
+        return
+
+    # Проверяем, ожидаем ли мы ввод названия клана
+    if context.user_data.get("clan_creation"):
+        await handle_clan_creation(update, context)
         return
 
     if state == "choose_class":
@@ -1598,12 +1900,42 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await msg.reply_text("Не понимаю. Используй кнопки или команды /help.", reply_markup=MAIN_KB)
 
+def build_clans_keyboard(player: Dict[str, Any]) -> InlineKeyboardMarkup:
+    """Клавиатура для управления кланами"""
+    keyboard = []
+    
+    if player.get("clan"):
+        # Игрок уже в клане
+        keyboard.append([InlineKeyboardButton("🚪 Покинуть клан", callback_data="clan:leave")])
+    else:
+        # Игрок не в клане
+        keyboard.append([InlineKeyboardButton("🏗️ Создать клан", callback_data="clan:create")])
+        
+        # Кнопки для присоединения к существующим кланам
+        available_clans = []
+        for clan_name, clan in clans.items():
+            if len(clan['members']) < 20 and clan_name not in clan['members']:
+                available_clans.append(clan_name)
+        
+        if available_clans:
+            for clan_name in available_clans[:5]:  # Максимум 5 кнопок
+                clan = clans[clan_name]
+                keyboard.append([InlineKeyboardButton(
+                    f"➕ Присоединиться к {clan['name']}",
+                    callback_data=f"clan:join:{clan_name}"
+                )])
+    
+    keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="clan:refresh")])
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="clan:main_menu")])
+    
+    return InlineKeyboardMarkup(keyboard)
+
 # --------------------------------- Main --------------------------------------
 
 def main():
     load_players()
     load_clans()
-    app = ApplicationBuilder().token("8261910418:AAE9SWq5uITIIxCgzB8-1f2h-EibNufdk3s").build()
+    app = ApplicationBuilder().token("8261910418:AAEznpYrq-ZeNUqcobvwq7aQQ7_kUw9QNOQ").build()
 
     # Основные команды
     app.add_handler(CommandHandler("start", start))
@@ -1625,6 +1957,7 @@ def main():
     app.add_handler(CallbackQueryHandler(battle_callback, pattern=r"^battle:"))
     app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:"))
     app.add_handler(CallbackQueryHandler(casino_callback, pattern=r"^casino:"))
+    app.add_handler(CallbackQueryHandler(clan_callback, pattern=r"^clan:"))
     
     # Обработчик текстовых сообщений (включая ставки для казино)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
