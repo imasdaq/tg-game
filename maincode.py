@@ -182,7 +182,7 @@ def generate_enemy(level: int) -> Dict[str, Any]:
         "name": base["name"],
         "hp": base["hp"] + 5 * scale,
         "max_hp": base["hp"] + 5 * scale,
-        "attack": base["attack"] + scale,
+        "attack": base["attack"] + scale * 2,  # Увеличиваем атаку сильнее
         "defense": base["defense"] + (scale // 2),
         "xp": base["xp"] + 10 * scale,
         "gold": random.randint(*base["gold"]) + 2 * scale,
@@ -191,7 +191,8 @@ def generate_enemy(level: int) -> Dict[str, Any]:
     return enemy
 
 def dmg_roll(atk: int, df: int, spread: int = 2) -> int:
-    raw = atk + random.randint(0, spread) - df
+    # Урон теперь зависит от разницы между атакой и защитой
+    raw = atk + random.randint(0, spread) - max(0, df - 2)  # Защита уменьшает урон, но не более чем на 2
     return max(1, raw)
 
 def ability_description(class_name: str) -> str:
