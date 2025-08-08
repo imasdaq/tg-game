@@ -239,6 +239,15 @@ def build_casino_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton("🚪 Выход", callback_data="casino:exit")])
     return InlineKeyboardMarkup(buttons)
 
+def build_casino_games_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(CASINO_GAMES["double"]["name"], callback_data="casino:double")],
+        [InlineKeyboardButton(CASINO_GAMES["dice"]["name"], callback_data="casino:dice")],
+        [InlineKeyboardButton(CASINO_GAMES["roulette"]["name"], callback_data="casino:roulette")],
+        [InlineKeyboardButton("🔁 Сменить ставку", callback_data="casino:change_bet")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="casino:exit")],
+    ])
+
 def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[str, Any]:
     """Основная логика игры в казино"""
     game = CASINO_GAMES[game_type]
@@ -530,12 +539,14 @@ async def casino_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     p = players[uid]
+    # Сбрасываем прошлую ставку и переводим пользователя в режим ожидания ввода ставки
+    context.user_data.pop("casino_bet", None)
+    context.user_data["awaiting_casino_bet"] = True
     await update.message.reply_text(
         f"🎰 <b>Добро пожаловать в казино!</b>\n"
         f"💰 Ваш баланс: {p['gold']} золота\n\n"
-         "🎮 Напишите количество золота, которое хотите поставить:",
-        parse_mode="HTML",
-        reply_markup=build_casino_kb(p)
+        "✍️ Введите сумму ставки (число) или процент от баланса (например, 25%):",
+        parse_mode="HTML"
     )
 
 async def casino_bet_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -546,6 +557,9 @@ async def casino_bet_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     p = players[uid]
+    # Обрабатываем ввод только если мы действительно ожидаем ставку
+    if not context.user_data.get("awaiting_casino_bet"):
+        return
     text = update.message.text.strip()
     
     try:
@@ -569,24 +583,21 @@ async def casino_bet_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     context.user_data["casino_bet"] = bet
+    context.user_data["awaiting_casino_bet"] = False
     await show_casino_games(update, context)
 
 async def show_casino_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показ игр после ввода ставки"""
     bet = context.user_data["casino_bet"]
     
-    buttons = [
-        [InlineKeyboardButton(CASINO_GAMES["double"]["name"], callback_data="casino:double")],
-        [InlineKeyboardButton(CASINO_GAMES["dice"]["name"], callback_data="casino:dice")],
-        [InlineKeyboardButton(CASINO_GAMES["roulette"]["name"], callback_data="casino:roulette")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="casino:exit")]
-    ]
-    
     await update.message.reply_text(
         f"💰 Ваша ставка: <b>{bet}</b> золота\n"
-        "🎮 Выберите игру:",
+        "🎮 Выберите игру:\n\n"
+        "🎯 Удвоение - шанс выигрыша 45%, множитель x2\n"
+        "🎲 Кости - шанс выигрыша 50%, множитель x1.5\n"
+        "🎡 Рулетка - шанс выигрыша 40%, множитель x2",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        reply_markup=build_casino_games_kb()
     )
 
 async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -603,7 +614,18 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data.split(":")
     
     if data[1] == "exit":
+        context.user_data.pop("casino_bet", None)
+        context.user_data.pop("awaiting_casino_bet", None)
         await query.edit_message_text("🚪 Вы покинули казино. Удачи в приключениях!")
+        return
+    elif data[1] == "change_bet":
+        context.user_data.pop("casino_bet", None)
+        context.user_data["awaiting_casino_bet"] = True
+        await query.edit_message_text(
+            f"✍️ Введите новую сумму ставки (число) или процент от баланса (например, 25%):\n"
+            f"💰 Ваш текущий баланс: {p['gold']} золота",
+            parse_mode="HTML"
+        )
         return
     elif data[1] == "balance":
         await query.answer(f"Ваш баланс: {p['gold']} золота", show_alert=True)
@@ -613,8 +635,11 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Определяем ставку
-    bet = context.user_data.get("casino_bet", 10)  # По умолчанию 10, если ставка не была установлена
+    bet = context.user_data.get("casino_bet")
     game_type = data[1]
+    if bet is None:
+        await query.answer("Сначала введите ставку сообщением в чате.", show_alert=True)
+        return
     
     result = play_casino_game(p, game_type, bet)
     save_players()
@@ -641,7 +666,7 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         message,
         parse_mode="HTML",
-        reply_markup=build_casino_kb(p)
+        reply_markup=build_casino_games_kb()
     )
 
 # ----------------------------- Бой: callback-и -------------------------------
@@ -766,6 +791,11 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = context.user_data.get("state", "idle")
 
+    # Проверяем, ожидаем ли мы ввод ставки для казино
+    if context.user_data.get("awaiting_casino_bet"):
+        await casino_bet_input(update, context)
+        return
+
     if state == "choose_class":
         choice = msg.text.strip()
         if choice in CLASS_STATS:
@@ -811,7 +841,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     load_players()
-    app = ApplicationBuilder().token("").build()
+    app = ApplicationBuilder().token("8261910418:AAE9SWq5uITIIxCgzB8-1f2h-EibNufdk3s").build()
 
     # Основные команды
     app.add_handler(CommandHandler("start", start))
@@ -824,15 +854,12 @@ def main():
     app.add_handler(CommandHandler("shop", shop_cmd))
     app.add_handler(CommandHandler("casino", casino_cmd))
     
-    # Обработчики сообщений с ставками для казино
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(\d+|(\d+%)$)'), casino_bet_input))
-    
     # Обработчики callback'ов
     app.add_handler(CallbackQueryHandler(battle_callback, pattern=r"^battle:"))
     app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:"))
     app.add_handler(CallbackQueryHandler(casino_callback, pattern=r"^casino:"))
     
-    # Обработчик текстовых сообщений
+    # Обработчик текстовых сообщений (включая ставки для казино)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
     print("Bot is running...")
