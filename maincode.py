@@ -1,5 +1,6 @@
-# -*- coding: utf-8 -*-
+    # -*- coding: utf-8 -*-
 import json
+from datetime import datetime
 import os
 import random
 from typing import Dict, Any, Optional
@@ -321,11 +322,26 @@ async def adventure_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in players:
         await update.message.reply_text("Сначала нажми /start")
         return
+    
+    # Проверка кулдауна
+    last_adventure = context.user_data.get("last_adventure")
+    if last_adventure:
+        cooldown = 30  # 30 секунд кулдауна
+        elapsed = (datetime.now() - last_adventure).total_seconds()
+        if elapsed < cooldown:
+            remaining = int(cooldown - elapsed)
+            await update.message.reply_text(
+                f"Ты устал и не готов к новым приключениям. Отдохни ещё {remaining} секунд.",
+                reply_markup=MAIN_KB
+            )
+            return
+    
     p = players[uid]
+    context.user_data["last_adventure"] = datetime.now()
+    
     event = random.choice(["fight", "gold", "item", "merchant"])
     if event == "fight":
         enemy = generate_enemy(p["level"])
-        # Состояние боя
         context.user_data["battle"] = {
             "enemy": enemy,
             "ability_used": False,
@@ -348,6 +364,7 @@ async def adventure_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Ты нашёл предмет: {item}! Он добавлен в инвентарь.")
     elif event == "merchant":
         await update.message.reply_text("Тебе повстречался странствующий торговец:", reply_markup=build_shop_kb())
+
 
 async def shop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Лавка торговца:", reply_markup=build_shop_kb())
@@ -540,6 +557,18 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif msg.text == "🎒 Инвентарь":
         await inventory_cmd(update, context)
     elif msg.text == "🗺️ Приключение":
+        # Проверка кулдауна
+        last_adventure = context.user_data.get("last_adventure")
+        if last_adventure:
+            cooldown = 30  # 30 секунд кулдауна
+            elapsed = (datetime.now() - last_adventure).total_seconds()
+            if elapsed < cooldown:
+                remaining = int(cooldown - elapsed)
+                await msg.reply_text(
+                    f"Ты устал 😥 и не готов к новым приключениям 🗺️. Отдохни ещё {remaining} секунд .",
+                    reply_markup=MAIN_KB
+                )
+                return
         await adventure_cmd(update, context)
     elif msg.text == "🧾 Квесты":
         await quests_cmd(update, context)
@@ -555,7 +584,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     load_players()
-    app = ApplicationBuilder().token("YOUR_BOT_TOKEN_HERE").build()
+    app = ApplicationBuilder().token("").build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
