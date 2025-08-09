@@ -35,7 +35,7 @@ MAIN_KB = ReplyKeyboardMarkup(
      ["🏆 Достижения", "🎁 Ежедневные"],
      ["⚔️ PvP", "🏰 Кланы"],
      ["🐾 Питомцы", "💼 Бизнес"],
-     ["⚙️ Помощь"]],
+     ["💸 Траты", "⚙️ Помощь"]],
     resize_keyboard=True
 )
 
@@ -106,6 +106,10 @@ ACHIEVEMENTS = {
     "pvp_champion": {"name": "🏆 Чемпион PvP", "desc": "Победите 20 игроков", "reward": {"gold": 400, "xp": 500}},
     "pet_lover": {"name": "🐾 Любитель питомцев", "desc": "Получите 3 питомца", "reward": {"gold": 150, "xp": 200}},
     "clan_leader": {"name": "🏰 Лидер клана", "desc": "Создайте клан", "reward": {"gold": 250, "xp": 300}},
+    "business_tycoon": {"name": "🏢 Бизнес-магнат", "desc": "Владейте 3 бизнесами", "reward": {"gold": 300, "xp": 400}},
+    "daily_master": {"name": "📅 Мастер ежедневных", "desc": "Получите 7 ежедневных наград подряд", "reward": {"gold": 400, "xp": 600}},
+    "casino_professional": {"name": "🎰 Профессионал казино", "desc": "Выиграйте 50 игр в казино", "reward": {"gold": 500, "xp": 800}},
+    "inventory_collector": {"name": "🎒 Коллекционер", "desc": "Соберите 10 разных предметов", "reward": {"gold": 200, "xp": 300}},
 }
 
 # Система питомцев
@@ -142,6 +146,83 @@ clans: Dict[str, Dict[str, Any]] = {}
 
 # PvP система
 pvp_requests: Dict[str, Dict[str, Any]] = {}
+
+# Система квестов
+QUESTS = {
+    "rat_hunter": {
+        "title": "Крысолов",
+        "desc": "Убей 3 крыс в окрестностях.",
+        "target_type": "rat",
+        "required": 3,
+        "reward": {"xp": 100, "gold": 30, "item": "Малое зелье лечения"},
+    },
+    "goblin_slayer": {
+        "title": "Истребитель гоблинов",
+        "desc": "Победите 5 гоблинов.",
+        "target_type": "goblin",
+        "required": 5,
+        "reward": {"xp": 150, "gold": 50, "item": "Руна силы"},
+    },
+    "wolf_hunter": {
+        "title": "Охотник на волков",
+        "desc": "Убейте 4 волка.",
+        "target_type": "wolf",
+        "required": 4,
+        "reward": {"xp": 200, "gold": 75, "item": "Кожаная броня"},
+    },
+    "casino_regular": {
+        "title": "Завсегдатай казино",
+        "desc": "Сыграйте 10 раз в казино.",
+        "target_type": "casino_plays",
+        "required": 10,
+        "reward": {"xp": 120, "gold": 100, "item": "Эликсир удачи"},
+    },
+    "business_owner": {
+        "title": "Владелец бизнеса",
+        "desc": "Купите 2 бизнеса.",
+        "target_type": "businesses_owned",
+        "required": 2,
+        "reward": {"xp": 180, "gold": 150, "item": "Амулет защиты"},
+    },
+}
+
+def generate_random_quest(player_level: int) -> Dict[str, Any]:
+    """Генерирует случайный квест на основе уровня игрока"""
+    quest_templates = [
+        {
+            "title": "Сборщик ресурсов",
+            "desc": "Найдите {amount} предметов в приключениях.",
+            "target_type": "items_found",
+            "required": lambda level: random.randint(3, 5 + level // 2),
+            "reward": lambda level: {"xp": 50 + level * 10, "gold": 20 + level * 5, "item": "Малое зелье лечения"}
+        },
+        {
+            "title": "Истребитель монстров",
+            "desc": "Победите {amount} врагов любого типа.",
+            "target_type": "enemies_killed",
+            "required": lambda level: random.randint(5, 8 + level),
+            "reward": lambda level: {"xp": 80 + level * 15, "gold": 30 + level * 8, "item": "Руна силы"}
+        },
+        {
+            "title": "Золотоискатель",
+            "desc": "Заработайте {amount} золота.",
+            "target_type": "gold_earned",
+            "required": lambda level: random.randint(50, 100 + level * 20),
+            "reward": lambda level: {"xp": 60 + level * 12, "gold": 40 + level * 10, "item": "Эликсир удачи"}
+        }
+    ]
+    
+    template = random.choice(quest_templates)
+    required = template["required"](player_level)
+    reward = template["reward"](player_level)
+    
+    return {
+        "title": template["title"],
+        "desc": template["desc"].format(amount=required),
+        "target_type": template["target_type"],
+        "required": required,
+        "reward": reward
+    }
 
 # ----------------------------- Утилиты сохранения -----------------------------
 
@@ -300,6 +381,30 @@ def check_achievements(player: Dict[str, Any], action: str, value: Any = None) -
         player["achievements"]["clan_leader"] = {"earned": True, "date": datetime.now().isoformat()}
         earned.append("clan_leader")
     
+    # Новые достижения
+    elif action == "business_check" and "business_tycoon" not in player["achievements"]:
+        if len(player.get("businesses", {})) >= 3:
+            player["achievements"]["business_tycoon"] = {"earned": True, "date": datetime.now().isoformat()}
+            earned.append("business_tycoon")
+    
+    elif action == "daily_check" and "daily_master" not in player["achievements"]:
+        if player.get("daily_streak", 0) >= 7:
+            player["achievements"]["daily_master"] = {"earned": True, "date": datetime.now().isoformat()}
+            earned.append("daily_master")
+    
+    elif action == "casino_total_wins" and "casino_professional" not in player["achievements"]:
+        total_wins = player.get("casino_total_wins", 0) + 1
+        player["casino_total_wins"] = total_wins
+        if total_wins >= 50:
+            player["achievements"]["casino_professional"] = {"earned": True, "date": datetime.now().isoformat()}
+            earned.append("casino_professional")
+    
+    elif action == "inventory_check" and "inventory_collector" not in player["achievements"]:
+        unique_items = len(player.get("inventory", {}))
+        if unique_items >= 10:
+            player["achievements"]["inventory_collector"] = {"earned": True, "date": datetime.now().isoformat()}
+            earned.append("inventory_collector")
+    
     if earned:
         save_players()
     
@@ -377,6 +482,10 @@ def claim_daily_reward(player: Dict[str, Any]) -> Dict[str, Any]:
     
     if "item" in reward:
         add_item(player, reward["item"], 1)
+    
+    # Проверяем достижения
+    check_achievements(player, "daily_check")
+    check_achievements(player, "inventory_check")
     
     save_players()
     
@@ -497,33 +606,6 @@ def decline_pvp_request(request_id: str) -> bool:
     del pvp_requests[request_id]
     return True
 
-def ensure_player(user_id: int, name: str) -> Dict[str, Any]:
-    uid = str(user_id)
-    if uid not in players:
-        players[uid] = {
-            "name": name,
-            "class": None,
-            "level": 1,
-            "xp": 0,
-            "hp": 100,
-            "max_hp": 100,
-            "attack": 5,
-            "defense": 2,
-            "gold": 50,  # Увеличим стартовое золото
-            "inventory": {"Малое зелье лечения": 2},
-            "quests": {},
-            "last_casino_play": None,
-            "achievements": {},
-            "pets": [],
-            "clan": None,
-            "daily_reward_claimed": False,
-            "last_daily_reward": None,
-            "pvp_wins": 0,
-            "pvp_losses": 0,
-        }
-        save_players()
-    return players[uid]
-
 def set_class(player: Dict[str, Any], class_name: str) -> None:
     stats = CLASS_STATS[class_name]
     player["class"] = class_name
@@ -598,6 +680,49 @@ def grant_rewards(player: Dict[str, Any], xp: int, gold: int, loot: Optional[str
     save_players()
     return f"+{xp} XP, +{gold} золота.{loot_text}{level_up_text}{achievement_text}"
 
+def update_quests_on_enemy_kill(player: Dict[str, Any], enemy_type: str) -> str:
+    """Обновляет прогресс всех подходящих активных квестов при убийстве врага.
+    Возвращает текст с сообщениями о прогрессе/выполнении."""
+    if not player or "quests" not in player:
+        return ""
+
+    updates: List[str] = []
+    changed: bool = False
+
+    for quest in player["quests"].values():
+        if quest.get("status") != "active":
+            continue
+
+        target_type = quest.get("target_type")
+        if target_type in (enemy_type, "enemies_killed"):
+            # Инкремент прогресса
+            quest["progress"] = int(quest.get("progress", 0)) + 1
+            changed = True
+
+            # Проверяем завершение
+            required = int(quest.get("required", 0))
+            if required and quest["progress"] >= required:
+                quest["status"] = "completed"
+                rew = quest.get("reward", {})
+                add_text = grant_rewards(
+                    player,
+                    int(rew.get("xp", 0)),
+                    int(rew.get("gold", 0)),
+                    rew.get("item")
+                )
+                # Достижение за квесты
+                check_achievements(player, "quest_complete")
+                updates.append(f"\n✅ Квест '{quest.get('title', 'Без названия')}' выполнен! {add_text}")
+            else:
+                updates.append(
+                    f"\nКвест '{quest.get('title', 'Без названия')}': прогресс {quest.get('progress', 0)}/{quest.get('required', 0)}."
+                )
+
+    if changed:
+        save_players()
+
+    return "".join(updates)
+
 def check_level_up(player: Dict[str, Any]) -> str:
     text = ""
     while player["xp"] >= get_xp_to_next(player["level"]):
@@ -660,44 +785,183 @@ def build_battle_kb() -> InlineKeyboardMarkup:
     ])
 
 def build_shop_kb(player: Dict[str, Any] = None) -> InlineKeyboardMarkup:
+    """Улучшенная клавиатура магазина с массовой покупкой"""
     buttons = []
+    
+    # Группируем предметы по типам
+    consumables = []
+    equipment = []
+    pets = []
+    
     for item_name, meta in SHOP_ITEMS.items():
         emoji = meta.get("emoji", "📦")
         price = meta['price']
+        item_type = meta["type"]
         
-        # Для питомцев показываем статус владения
-        if meta["type"] == "pet":
+        # Показываем количество в инвентаре
+        inventory_count = 0
+        if player:
+            inventory_count = player["inventory"].get(item_name, 0)
+        
+        if item_type == "consumable":
+            consumables.append((item_name, meta, inventory_count))
+        elif item_type == "equipment":
+            equipment.append((item_name, meta, inventory_count))
+        elif item_type == "pet":
+            pets.append((item_name, meta, inventory_count))
+    
+    # Потребляемые предметы
+    if consumables:
+        buttons.append([InlineKeyboardButton("🧪 Потребляемые предметы", callback_data="shop:category:consumable")])
+        for item_name, meta, count in consumables:
+            emoji = meta.get("emoji", "📦")
+            price = meta['price']
+            buttons.append([InlineKeyboardButton(
+                f"{emoji} {item_name} ({price}💰) x{count}",
+                callback_data=f"shop:buy:{item_name}"
+            )])
+    
+    # Экипировка
+    if equipment:
+        buttons.append([InlineKeyboardButton("⚔️ Экипировка", callback_data="shop:category:equipment")])
+        for item_name, meta, count in equipment:
+            emoji = meta.get("emoji", "📦")
+            price = meta['price']
+            buttons.append([InlineKeyboardButton(
+                f"{emoji} {item_name} ({price}💰) x{count}",
+                callback_data=f"shop:buy:{item_name}"
+            )])
+    
+    # Питомцы
+    if pets:
+        buttons.append([InlineKeyboardButton("🐾 Питомцы", callback_data="shop:category:pet")])
+        for item_name, meta, count in pets:
+            emoji = meta.get("emoji", "📦")
+            price = meta['price']
             pet_id = meta["pet_id"]
+            
             if player and pet_id in player.get("pets", []):
-                # У игрока уже есть этот питомец
                 buttons.append([InlineKeyboardButton(f"{emoji} {item_name} ✅ (Уже есть)", callback_data="shop:already_owned")])
             else:
-                buttons.append([InlineKeyboardButton(f"{emoji} Купить: {item_name} ({price}💰)", callback_data=f"shop:buy:{item_name}")])
-        else:
-            buttons.append([InlineKeyboardButton(f"{emoji} Купить: {item_name} ({price}💰)", callback_data=f"shop:buy:{item_name}")])
+                buttons.append([InlineKeyboardButton(f"{emoji} {item_name} ({price}💰)", callback_data=f"shop:buy:{item_name}")])
     
+    # Кнопки массовой покупки
+    buttons.append([InlineKeyboardButton("🛒 Массовая покупка", callback_data="shop:bulk")])
+    buttons.append([InlineKeyboardButton("💰 Баланс", callback_data="shop:balance")])
     buttons.append([InlineKeyboardButton("Закрыть", callback_data="shop:close")])
+    
     return InlineKeyboardMarkup(buttons)
 
+def build_bulk_shop_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
+    """Клавиатура для массовой покупки"""
+    buttons = []
+    
+    # Только потребляемые предметы для массовой покупки
+    for item_name, meta in SHOP_ITEMS.items():
+        if meta["type"] == "consumable":
+            emoji = meta.get("emoji", "📦")
+            price = meta['price']
+            inventory_count = player["inventory"].get(item_name, 0)
+            
+            buttons.append([InlineKeyboardButton(
+                f"{emoji} {item_name} x{inventory_count}",
+                callback_data=f"shop:bulk:{item_name}"
+            )])
+    
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="shop:back")])
+    return InlineKeyboardMarkup(buttons)
+
+def get_business_income_info(player: Dict[str, Any]) -> Dict[str, Any]:
+    """Получает информацию о доходе от бизнесов"""
+    owned = player.get("businesses", {})
+    total_income_per_min = 0
+    total_income_per_hour = 0
+    business_details = []
+    
+    for biz_id, meta in owned.items():
+        if biz_id in BUSINESSES:
+            base_income = BUSINESSES[biz_id]["income_per_min"]
+            level = meta.get("level", 1)
+            income_per_min = base_income * level
+            income_per_hour = income_per_min * 60
+            
+            total_income_per_min += income_per_min
+            total_income_per_hour += income_per_hour
+            
+            business_details.append({
+                "id": biz_id,
+                "name": BUSINESSES[biz_id]["name"],
+                "level": level,
+                "income_per_min": income_per_min,
+                "income_per_hour": income_per_hour,
+                "upgrade_cost": int(BUSINESSES[biz_id]["price"] * 0.5)
+            })
+    
+    return {
+        "total_per_min": total_income_per_min,
+        "total_per_hour": total_income_per_hour,
+        "businesses": business_details
+    }
+
+def get_time_until_next_daily(player: Dict[str, Any]) -> str:
+    """Возвращает время до следующей ежедневной награды"""
+    if not player.get("last_daily_reward"):
+        return "Доступно сейчас!"
+    
+    last_claim = datetime.fromisoformat(player["last_daily_reward"])
+    now = datetime.now()
+    time_diff = timedelta(hours=24) - (now - last_claim)
+    
+    if time_diff.total_seconds() <= 0:
+        return "Доступно сейчас!"
+    
+    hours = int(time_diff.total_seconds() // 3600)
+    minutes = int((time_diff.total_seconds() % 3600) // 60)
+    
+    if hours > 0:
+        return f"{hours}ч {minutes}м"
+    else:
+        return f"{minutes}м"
+
 def build_businesses_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
+    """Улучшенная клавиатура бизнесов с детальной информацией"""
     buttons = []
     owned = player.get("businesses", {})
+    income_info = get_business_income_info(player)
+    
+    # Заголовок с общей информацией
+    total_income = income_info["total_per_min"]
+    buttons.append([InlineKeyboardButton(
+        f"💰 Общий доход: {total_income}/мин ({income_info['total_per_hour']}/час)",
+        callback_data="biz:info"
+    )])
+    
+    # Доступные для покупки бизнесы
     for biz_id, meta in BUSINESSES.items():
         name = meta["name"]
         price = meta["price"]
         income = meta["income_per_min"]
+        
         if biz_id in owned:
             level = owned[biz_id].get("level", 1)
+            current_income = income * level
+            upgrade_cost = int(price * 0.5)
             buttons.append([InlineKeyboardButton(
-                f"{name} ✅ ур.{level} (доход {income * level}/мин)", callback_data="biz:owned"
+                f"{name} ✅ ур.{level} ({current_income}/мин) 💰{upgrade_cost}",
+                callback_data=f"biz:upgrade:{biz_id}"
             )])
         else:
             buttons.append([InlineKeyboardButton(
-                f"{name} — {price}💰 (доход {income}/мин)", callback_data=f"biz:buy:{biz_id}"
+                f"{name} — {price}💰 ({income}/мин)",
+                callback_data=f"biz:buy:{biz_id}"
             )])
+    
+    # Кнопки управления
     buttons.append([InlineKeyboardButton("📥 Забрать доход", callback_data="biz:claim")])
     buttons.append([InlineKeyboardButton("➕ Улучшить все (x2 доход)", callback_data="biz:upgrade_all")])
+    buttons.append([InlineKeyboardButton("📊 Детали", callback_data="biz:details")])
     buttons.append([InlineKeyboardButton("🚪 Закрыть", callback_data="biz:close")])
+    
     return InlineKeyboardMarkup(buttons)
 
 def battle_text(player: Dict[str, Any], enemy: Dict[str, Any], log: str = "") -> str:
@@ -724,8 +988,13 @@ def build_casino_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 def build_casino_games_kb() -> InlineKeyboardMarkup:
-    """Клавиатура с играми казино"""
+    """Улучшенная клавиатура с играми казино и быстрыми ставками"""
     keyboard = []
+    
+    # Быстрые ставки
+    keyboard.append([InlineKeyboardButton("⚡ Быстрые ставки", callback_data="casino:quick_bets")])
+    
+    # Игры
     for game_id, game_info in CASINO_GAMES.items():
         keyboard.append([InlineKeyboardButton(
             f"{game_info['emoji']} {game_info['name']} ({int(game_info['win_chance'] * 100)}% | x{game_info['multiplier']})",
@@ -737,9 +1006,80 @@ def build_casino_games_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton("💰 Баланс", callback_data="casino:balance"),
         InlineKeyboardButton("💸 Изменить ставку", callback_data="casino:change_bet")
     ])
-    keyboard.append([InlineKeyboardButton("🚪 Выйти", callback_data="casino:exit")])
+    keyboard.append([
+        InlineKeyboardButton("📊 История", callback_data="casino:history"),
+        InlineKeyboardButton("🚪 Выйти", callback_data="casino:exit")
+    ])
     
     return InlineKeyboardMarkup(keyboard)
+
+def build_quick_bets_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
+    """Клавиатура быстрых ставок"""
+    balance = player["gold"]
+    keyboard = []
+    
+    # Процентные ставки
+    percentages = [10, 25, 50, 75, 100]
+    for percent in percentages:
+        bet_amount = int(balance * percent / 100)
+        if bet_amount >= 5:  # Минимальная ставка
+            keyboard.append([InlineKeyboardButton(
+                f"{percent}% = {bet_amount}💰",
+                callback_data=f"casino:quick_bet:{bet_amount}"
+            )])
+    
+    # Фиксированные ставки
+    fixed_bets = [10, 25, 50, 100, 250, 500]
+    for bet in fixed_bets:
+        if bet <= balance:
+            keyboard.append([InlineKeyboardButton(
+                f"{bet}💰",
+                callback_data=f"casino:quick_bet:{bet}"
+            )])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="casino:back")])
+    return InlineKeyboardMarkup(keyboard)
+
+def add_casino_history(player: Dict[str, Any], game_type: str, bet: int, result: bool, prize: int = 0):
+    """Добавляет запись в историю казино"""
+    if "casino_history" not in player:
+        player["casino_history"] = []
+    
+    history_entry = {
+        "game": game_type,
+        "bet": bet,
+        "result": result,
+        "prize": prize,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    player["casino_history"].append(history_entry)
+    
+    # Ограничиваем историю последними 20 играми
+    if len(player["casino_history"]) > 20:
+        player["casino_history"] = player["casino_history"][-20:]
+    
+    save_players()
+
+def get_casino_stats(player: Dict[str, Any]) -> Dict[str, Any]:
+    """Получает статистику казино"""
+    history = player.get("casino_history", [])
+    
+    if not history:
+        return {"total_games": 0, "wins": 0, "losses": 0, "winrate": 0, "total_profit": 0}
+    
+    wins = sum(1 for entry in history if entry["result"])
+    losses = len(history) - wins
+    total_profit = sum(entry["prize"] - entry["bet"] for entry in history)
+    winrate = (wins / len(history)) * 100 if history else 0
+    
+    return {
+        "total_games": len(history),
+        "wins": wins,
+        "losses": losses,
+        "winrate": winrate,
+        "total_profit": total_profit
+    }
 
 def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[str, Any]:
     """Основная логика игры в казино"""
@@ -769,6 +1109,7 @@ def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[s
             player["gold"] += prize
             # Проверяем достижения
             check_achievements(player, "casino_win")
+            check_achievements(player, "casino_total_wins")
             return {"success": True, "message": f"🎉 Победа! Выиграли {prize} золота!", "prize": prize}
         return {"success": False, "message": f"💸 Проигрыш! Потеряли {bet} золота."}
     
@@ -780,6 +1121,7 @@ def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[s
             player["gold"] += prize
             # Проверяем достижения
             check_achievements(player, "casino_win")
+            check_achievements(player, "casino_total_wins")
             return {"success": True, "message": f"🎲 Вы: {player_roll} | Казино: {casino_roll}\n🏆 Выиграли {prize} золота!"}
         elif player_roll == casino_roll:
             player["gold"] += bet
@@ -797,6 +1139,7 @@ def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[s
             player["gold"] += prize
             # Проверяем достижения
             check_achievements(player, "casino_win")
+            check_achievements(player, "casino_total_wins")
             return {"success": True, "message": f"🎡 Выпало: {color}{number}\n🎉 Выиграли {prize} золота!"}
         else:
             return {"success": False, "message": f"🎡 Выпало: {color}{number}\n💸 Проиграли {bet} золота."}
@@ -808,6 +1151,7 @@ def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[s
             prize = bet * game["multiplier"]
             player["gold"] += prize
             check_achievements(player, "casino_win")
+            check_achievements(player, "casino_total_wins")
             return {"success": True, "message": f"🎰 {' '.join(result)}\n🎉 ДЖЕКПОТ! Выиграли {prize} золота!"}
         else:
             return {"success": False, "message": f"🎰 {' '.join(result)}\n💸 Проиграли {bet} золота."}
@@ -823,6 +1167,7 @@ def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[s
             prize = bet * game["multiplier"]
             player["gold"] += prize
             check_achievements(player, "casino_win")
+            check_achievements(player, "casino_total_wins")
             return {"success": True, "message": f"🃏 Блэкджек! Выиграли {prize} золота!"}
         elif player_sum > 21:
             return {"success": False, "message": f"🃏 Перебор! Проиграли {bet} золота."}
@@ -830,6 +1175,7 @@ def play_casino_game(player: Dict[str, Any], game_type: str, bet: int) -> Dict[s
             prize = int(bet * game["multiplier"])
             player["gold"] += prize
             check_achievements(player, "casino_win")
+            check_achievements(player, "casino_total_wins")
             return {"success": True, "message": f"🃏 Победа! Выиграли {prize} золота!"}
         else:
             return {"success": False, "message": f"🃏 Проиграли {bet} золота."}
@@ -891,7 +1237,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🧪 <b>Предметы:</b>\n"
         "/use_potion - Использовать зелье\n\n"
         "🛠️ <b>Прочее:</b>\n"
-        "/help - Показать это сообщение"
+        "/help - Показать это сообщение\n"
+        "/spend - Другие способы тратить золото"
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_KB)
 
@@ -902,11 +1249,15 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     p = players[uid]
     
-    # Поля уже инициализированы в migrate_player_data()
-    
     # Получаем характеристики с учетом бонусов питомцев
     stats_with_pets = get_player_stats_with_pets(p)
     pet_bonuses = get_pet_bonuses(p)
+    
+    # Информация о бизнесах
+    business_info = get_business_income_info(p)
+    
+    # Время до следующей ежедневной награды
+    daily_timer = get_time_until_next_daily(p)
     
     text = (
         f"📊 <b>Статус {p['name']} ({p['class'] or 'Без класса'})</b>\n\n"
@@ -917,6 +1268,15 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🍀 Удача: <b>{stats_with_pets['luck']}</b>\n\n"
     )
     
+    # Информация о бизнесах
+    if business_info["total_per_min"] > 0:
+        text += f"💼 <b>Бизнесы:</b> {business_info['total_per_min']}/мин ({business_info['total_per_hour']}/час)\n"
+        text += f"📦 Владений: {len(p.get('businesses', {}))}\n\n"
+    
+    # Ежедневные награды
+    text += f"🎁 <b>Ежедневная награда:</b> {daily_timer}\n\n"
+    
+    # Бонусы питомцев
     if pet_bonuses["attack"] > 0 or pet_bonuses["defense"] > 0 or pet_bonuses["hp"] > 0:
         text += "🐾 <b>Бонусы питомцев:</b>\n"
         if pet_bonuses["attack"] > 0:
@@ -925,11 +1285,23 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"🛡️ Защита +{pet_bonuses['defense']}\n"
         if pet_bonuses["hp"] > 0:
             text += f"❤️ HP +{pet_bonuses['hp']}\n"
+        if pet_bonuses["luck"] > 0:
+            text += f"🍀 Удача +{pet_bonuses['luck']}\n"
         text += "\n"
     
+    # Клан
     if p.get("clan"):
-        text += f"🏰 Клан: <b>{p['clan']}</b>\n"
+        text += f"🏰 Клан: <b>{p['clan']}</b>\n\n"
     
+    # PvP статистика
+    if p.get("pvp_wins", 0) > 0 or p.get("pvp_losses", 0) > 0:
+        wins = p.get("pvp_wins", 0)
+        losses = p.get("pvp_losses", 0)
+        total = wins + losses
+        winrate = (wins / total * 100) if total > 0 else 0
+        text += f"⚔️ PvP: {wins}W/{losses}L ({winrate:.1f}%)\n\n"
+    
+    # Способность
     text += f"✨ Способность: {ability_description(p['class']) if p['class'] else '-'}"
     
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_KB)
@@ -967,7 +1339,7 @@ async def achievements_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_KB)
 
 async def daily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ежедневные награды"""
+    """Ежедневные награды с улучшенным интерфейсом"""
     uid = str(update.effective_user.id)
     if uid not in players:
         await update.message.reply_text("Сначала нажми /start")
@@ -975,30 +1347,58 @@ async def daily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     p = players[uid]
     
-    # Поля уже инициализированы в migrate_player_data()
+    # Проверяем возможность получения награды
+    can_claim = can_claim_daily_reward(p)
+    current_streak = get_daily_streak(p)
+    time_until = get_time_until_next_daily(p)
     
-    result = claim_daily_reward(p)
-    
-    if result["success"]:
-        streak = result["streak"]
-        reward = result["reward"]
+    if can_claim:
+        result = claim_daily_reward(p)
+        
+        if result["success"]:
+            streak = result["streak"]
+            reward = result["reward"]
+            
+            text = (
+                f"🎁 <b>Ежедневная награда получена!</b>\n\n"
+                f"📅 День: {streak}/7\n"
+                f"💰 Золото: +{reward['gold']}\n"
+                f"⭐ XP: +{reward['xp']}\n"
+                f"🎒 Предмет: {reward['item']}\n\n"
+            )
+            
+            if streak == 7:
+                text += "🎉 <b>Недельная серия завершена!</b>\n"
+                text += "Завтра начнется новый цикл."
+            else:
+                text += f"🔥 Серия: {streak} дней подряд\n"
+                text += "Заходите завтра за следующей наградой!"
+        else:
+            text = result["message"]
+    else:
+        # Показываем прогресс и время до следующей награды
+        next_streak = current_streak + 1 if current_streak < 7 else 1
+        next_reward = DAILY_REWARDS.get(next_streak, DAILY_REWARDS[1])
         
         text = (
-            f"🎁 <b>Ежедневная награда получена!</b>\n\n"
-            f"📅 День: {streak}/7\n"
-            f"💰 Золото: +{reward['gold']}\n"
-            f"⭐ XP: +{reward['xp']}\n"
-            f"🎒 Предмет: {reward['item']}\n\n"
+            f"🎁 <b>Ежедневные награды</b>\n\n"
+            f"📅 Текущая серия: {current_streak}/7\n"
+            f"⏰ До следующей награды: {time_until}\n\n"
         )
         
-        if streak == 7:
-            text += "🎉 <b>Недельная серия завершена!</b>\n"
-            text += "Завтра начнется новый цикл."
-        else:
-            text += f"🔥 Серия: {streak} дней подряд\n"
-            text += "Заходите завтра за следующей наградой!"
-    else:
-        text = result["message"]
+        # Показываем следующую награду
+        text += f"🎯 <b>Следующая награда (день {next_streak}):</b>\n"
+        text += f"💰 Золото: +{next_reward['gold']}\n"
+        text += f"⭐ XP: +{next_reward['xp']}\n"
+        text += f"🎒 Предмет: {next_reward['item']}\n\n"
+        
+        # Показываем прогресс недели
+        text += "📊 <b>Прогресс недели:</b>\n"
+        for day in range(1, 8):
+            if day <= current_streak:
+                text += f"✅ День {day}: {DAILY_REWARDS[day]['gold']}💰 +{DAILY_REWARDS[day]['xp']}XP\n"
+            else:
+                text += f"⏳ День {day}: {DAILY_REWARDS[day]['gold']}💰 +{DAILY_REWARDS[day]['xp']}XP\n"
     
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_KB)
 
@@ -1162,29 +1562,67 @@ async def use_potion_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def quests_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
+    query = getattr(update, "callback_query", None)
+
     if uid not in players:
-        await update.message.reply_text("Сначала нажми /start")
+        if query:
+            await safe_edit_message_text(query, "Сначала нажми /start")
+        else:
+            await update.message.reply_text("Сначала нажми /start")
         return
+
     p = players[uid]
     q = p["quests"]
+
     if not q:
-        await update.message.reply_text("📜 У тебя пока нет квестов.", reply_markup=MAIN_KB)
-        return
-    
-    quests_text = []
-    for quest in q.values():
-        status = "✅" if quest["status"] == "completed" else "⌛"
+        # Генерируем первый квест
+        new_quest = generate_random_quest(p["level"])
+        quest_id = f"random_quest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        p["quests"][quest_id] = {
+            **new_quest,
+            "progress": 0,
+            "status": "active"
+        }
+        save_players()
+        q = p["quests"]
+
+    quests_text: List[str] = []
+    active_count = 0
+    completed_count = 0
+
+    for quest_id, quest in q.items():
+        status = "✅" if quest.get("status") == "completed" else "⌛"
+        if quest.get("status") == "active":
+            active_count += 1
+        else:
+            completed_count += 1
+
         quests_text.append(
-            f"{status} <b>{quest['title']}</b>\n"
-            f"{quest['desc']}\n"
-            f"Прогресс: {quest['progress']}/{quest['required']}\n"
+            f"{status} <b>{quest.get('title', 'Без названия')}</b>\n"
+            f"📝 {quest.get('desc', '')}\n"
+            f"📊 Прогресс: {quest.get('progress', 0)}/{quest.get('required', 0)}\n"
         )
-    
-    await update.message.reply_text(
-        "📜 <b>Активные квесты:</b>\n\n" + "\n".join(quests_text),
-        parse_mode="HTML",
-        reply_markup=MAIN_KB
+
+    # Показываем статистику квестов
+    stats_text = (
+        f"📊 <b>Статистика квестов:</b>\n"
+        f"⌛ Активных: {active_count}\n"
+        f"✅ Завершенных: {completed_count}\n\n"
     )
+
+    # Кнопки для управления квестами
+    keyboard: List[List[InlineKeyboardButton]] = []
+    if active_count < 3:  # Максимум 3 активных квеста
+        keyboard.append([InlineKeyboardButton("🎯 Новый квест", callback_data="quest:new")])
+    keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="quest:refresh")])
+    keyboard.append([InlineKeyboardButton("🚪 Закрыть", callback_data="quest:close")])
+
+    text = f"📜 <b>Активные квесты:</b>\n\n{stats_text}" + "\n".join(quests_text)
+
+    if query:
+        await safe_edit_message_text(query, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def adventure_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -1340,7 +1778,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     p = players[uid]
-    data = query.data # shop:buy:ITEM, shop:close, or shop:already_owned
+    data = query.data # shop:buy:ITEM, shop:bulk:ITEM, shop:close, shop:already_owned, shop:balance, shop:back
 
     if data == "shop:close":
         context.user_data.pop("merchant_active", None)
@@ -1349,6 +1787,93 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "shop:already_owned":
         await query.answer("У тебя уже есть этот питомец!")
+        return
+    
+    if data == "shop:balance":
+        await query.answer(f"💰 Ваш баланс: {p['gold']} золота", show_alert=True)
+        return
+    
+    if data == "shop:back":
+        await safe_edit_message_text(
+            query,
+            "Лавка торговца:",
+            reply_markup=build_shop_kb(p)
+        )
+        return
+    
+    if data == "shop:bulk":
+        await safe_edit_message_text(
+            query,
+            "🛒 <b>Массовая покупка</b>\n\n"
+            "Выберите предмет для массовой покупки:",
+            parse_mode="HTML",
+            reply_markup=build_bulk_shop_kb(p)
+        )
+        return
+    
+    if data.startswith("shop:bulk:"):
+        _, _, item_name = data.split(":", 2)
+        if item_name not in SHOP_ITEMS:
+            await safe_edit_message_text(query, "Такого товара нет.")
+            return
+        
+        # Начинаем процесс массовой покупки
+        context.user_data["bulk_buy_item"] = item_name
+        context.user_data["awaiting_bulk_amount"] = True
+        
+        price = SHOP_ITEMS[item_name]["price"]
+        max_affordable = p["gold"] // price
+        
+        await safe_edit_message_text(
+            query,
+            f"🛒 <b>Массовая покупка: {item_name}</b>\n\n"
+            f"💰 Цена за штуку: {price} золота\n"
+            f"💰 Ваш баланс: {p['gold']} золота\n"
+            f"📦 Максимум можете купить: {max_affordable} штук\n\n"
+            "✍️ Введите количество для покупки:",
+            parse_mode="HTML"
+        )
+        return
+    
+    if data.startswith("shop:category:"):
+        _, _, category = data.split(":", 2)
+        category_items = []
+        
+        for item_name, meta in SHOP_ITEMS.items():
+            if meta["type"] == category:
+                category_items.append((item_name, meta))
+        
+        if not category_items:
+            await query.answer("В этой категории нет товаров", show_alert=True)
+            return
+        
+        buttons = []
+        for item_name, meta in category_items:
+            emoji = meta.get("emoji", "📦")
+            price = meta['price']
+            inventory_count = p["inventory"].get(item_name, 0)
+            
+            if category == "pet":
+                pet_id = meta["pet_id"]
+                if pet_id in p.get("pets", []):
+                    buttons.append([InlineKeyboardButton(f"{emoji} {item_name} ✅ (Уже есть)", callback_data="shop:already_owned")])
+                else:
+                    buttons.append([InlineKeyboardButton(f"{emoji} {item_name} ({price}💰)", callback_data=f"shop:buy:{item_name}")])
+            else:
+                buttons.append([InlineKeyboardButton(f"{emoji} {item_name} ({price}💰) x{inventory_count}", callback_data=f"shop:buy:{item_name}")])
+        
+        buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="shop:back")])
+        
+        category_names = {"consumable": "🧪 Потребляемые", "equipment": "⚔️ Экипировка", "pet": "🐾 Питомцы"}
+        category_name = category_names.get(category, category.title())
+        
+        await safe_edit_message_text(
+            query,
+            f"🛒 <b>{category_name}</b>\n\n"
+            "Выберите товар для покупки:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return
 
     _, action, item_name = data.split(":", 2)
@@ -1359,7 +1884,12 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         price = SHOP_ITEMS[item_name]["price"]
         if p["gold"] < price:
-            await safe_edit_message_text(query, f"Не хватает золота. Нужно {price}💰, у тебя {p['gold']}💰.")
+            await safe_edit_message_text(
+                query,
+                f"❌ Недостаточно золота для покупки {item_name}.\n"
+                f"Нужно {price}💰, у вас {p['gold']}💰.",
+                reply_markup=build_shop_kb(p)
+            )
             return
 
         p["gold"] -= price
@@ -1369,7 +1899,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             add_item(p, item_name, 1)
             await safe_edit_message_text(
                 query,
-                f"{emoji} Ты купил: {item_name}. В инвентаре пополнение! Золото: {p['gold']}.",
+                f"{emoji} Ты купил: {item_name}. В инвентаре пополнение!\n"
+                f"💰 Текущий баланс: {p['gold']}💰",
                 reply_markup=build_shop_kb(p)
             )
         elif SHOP_ITEMS[item_name]["type"] == "equipment":
@@ -1384,7 +1915,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_players()
             await safe_edit_message_text(
                 query,
-                f"{emoji} Ты купил и экипировал: {item_name}. Твоя сила растёт! Золото: {p['gold']}.",
+                f"{emoji} Ты купил и экипировал: {item_name}. Твоя сила растёт!\n"
+                f"💰 Текущий баланс: {p['gold']}💰",
                 reply_markup=build_shop_kb(p)
             )
         elif SHOP_ITEMS[item_name]["type"] == "pet":
@@ -1397,7 +1929,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 check_achievements(p, "pet_check", len(p["pets"]))
                 await safe_edit_message_text(
                     query,
-                    f"{emoji} Ты купил питомца: {item_name}! Теперь у тебя {len(p['pets'])} питомцев. Золото: {p['gold']}.",
+                    f"{emoji} Ты купил питомца: {item_name}! Теперь у тебя {len(p['pets'])} питомцев.\n"
+                    f"💰 Текущий баланс: {p['gold']}💰",
                     reply_markup=build_shop_kb(p)
                 )
             else:
@@ -1405,9 +1938,10 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 p["gold"] += price
                 await safe_edit_message_text(
                     query,
-                    f"❌ У тебя уже есть питомец {item_name}! Золото возвращено. Золото: {p['gold']}.",
+                    f"❌ У тебя уже есть питомец {item_name}! Золото возвращено.\n"
+                    f"💰 Текущий баланс: {p['gold']}💰",
                     reply_markup=build_shop_kb(p)
-            )
+                )
 
 async def businesses_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1417,14 +1951,47 @@ async def businesses_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await safe_edit_message_text(query, "Сначала нажми /start")
         return
     p = players[uid]
-    data = query.data  # biz:buy:ID | biz:claim | biz:upgrade_all | biz:close | biz:owned
+    data = query.data  # biz:buy:ID | biz:upgrade:ID | biz:claim | biz:upgrade_all | biz:close | biz:details | biz:info
 
     if data == "biz:close":
         await safe_edit_message_text(query, "Закрыто.")
         return
-    if data == "biz:owned":
-        await query.answer("Уже куплено")
+    
+    if data == "biz:info":
+        income_info = get_business_income_info(p)
+        text = (
+            f"💼 <b>Информация о бизнесах</b>\n\n"
+            f"💰 Общий доход: {income_info['total_per_min']}/мин\n"
+            f"📈 Доход в час: {income_info['total_per_hour']}\n"
+            f"📦 Владений: {len(p.get('businesses', {}))}\n\n"
+        )
+        
+        if income_info["businesses"]:
+            text += "<b>Ваши бизнесы:</b>\n"
+            for biz in income_info["businesses"]:
+                text += f"• {biz['name']} ур.{biz['level']} ({biz['income_per_min']}/мин)\n"
+        
+        await safe_edit_message_text(query, text, parse_mode="HTML", reply_markup=build_businesses_kb(p))
         return
+    
+    if data == "biz:details":
+        income_info = get_business_income_info(p)
+        text = "💼 <b>Детальная информация о бизнесах</b>\n\n"
+        
+        if income_info["businesses"]:
+            for biz in income_info["businesses"]:
+                text += (
+                    f"🏢 <b>{biz['name']}</b>\n"
+                    f"📊 Уровень: {biz['level']}\n"
+                    f"💰 Доход: {biz['income_per_min']}/мин ({biz['income_per_hour']}/час)\n"
+                    f"⚡ Стоимость улучшения: {biz['upgrade_cost']}💰\n\n"
+                )
+        else:
+            text += "У вас пока нет бизнесов.\n"
+        
+        await safe_edit_message_text(query, text, parse_mode="HTML", reply_markup=build_businesses_kb(p))
+        return
+    
     if data == "biz:claim":
         last = p.get("last_business_claim")
         now = datetime.now()
@@ -1433,64 +2000,131 @@ async def businesses_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             last_dt = now
             p["last_business_claim"] = now.isoformat()
+        
         minutes = max(0, int((now - last_dt).total_seconds() // 60))
         owned = p.get("businesses", {})
         total_income = 0
+        
         for biz_id, meta in owned.items():
             base = BUSINESSES.get(biz_id, {}).get("income_per_min", 0)
             level = meta.get("level", 1)
             total_income += base * level * minutes
+        
         p["gold"] += total_income
         p["last_business_claim"] = now.isoformat()
         save_players()
+        
         await safe_edit_message_text(
             query,
-            f"📥 Получено: {total_income}💰 за {minutes} мин. Текущий баланс: {p['gold']}💰",
+            f"📥 Получено: {total_income}💰 за {minutes} мин.\n"
+            f"💰 Текущий баланс: {p['gold']}💰",
             reply_markup=build_businesses_kb(p)
         )
         return
+    
     if data == "biz:upgrade_all":
         owned = p.setdefault("businesses", {})
+        if not owned:
+            await query.answer("У вас нет бизнесов для улучшения!", show_alert=True)
+            return
+        
         cost = 0
         for biz_id in owned.keys():
-            # Стоимость апгрейда: 50% от цены покупки
             cost += int(BUSINESSES[biz_id]["price"] * 0.5)
+        
         if p["gold"] < cost:
-            await query.answer(f"Не хватает золота для улучшения (нужно {cost}💰)", show_alert=True)
+            await safe_edit_message_text(
+                query,
+                f"❌ Недостаточно золота для улучшения всех бизнесов.\n"
+                f"Нужно {cost}💰, у вас {p['gold']}💰.",
+                reply_markup=build_businesses_kb(p)
+            )
             return
+        
         p["gold"] -= cost
         for biz_id in owned.keys():
             owned[biz_id]["level"] = owned[biz_id].get("level", 1) + 1
+        
         save_players()
         await safe_edit_message_text(
             query,
-            f"✅ Все бизнесы улучшены. Потрачено {cost}💰. Текущий баланс: {p['gold']}💰",
+            f"✅ Все бизнесы улучшены!\n"
+            f"💸 Потрачено: {cost}💰\n"
+            f"💰 Текущий баланс: {p['gold']}💰",
             reply_markup=build_businesses_kb(p)
         )
         return
+    
+    if data.startswith("biz:upgrade:"):
+        _, _, biz_id = data.split(":", 2)
+        if biz_id not in BUSINESSES:
+            await query.answer("Такого бизнеса нет", show_alert=True)
+            return
+        
+        if biz_id not in p.get("businesses", {}):
+            await query.answer("У вас нет этого бизнеса", show_alert=True)
+            return
+        
+        upgrade_cost = int(BUSINESSES[biz_id]["price"] * 0.5)
+        if p["gold"] < upgrade_cost:
+            await safe_edit_message_text(
+                query,
+                f"❌ Недостаточно золота для улучшения {BUSINESSES[biz_id]['name']}.\n"
+                f"Нужно {upgrade_cost}💰, у вас {p['gold']}💰.",
+                reply_markup=build_businesses_kb(p)
+            )
+            return
+        
+        p["gold"] -= upgrade_cost
+        p["businesses"][biz_id]["level"] = p["businesses"][biz_id].get("level", 1) + 1
+        save_players()
+        
+        await safe_edit_message_text(
+            query,
+            f"✅ {BUSINESSES[biz_id]['name']} улучшен!\n"
+            f"💸 Потрачено: {upgrade_cost}💰\n"
+            f"💰 Текущий баланс: {p['gold']}💰",
+            reply_markup=build_businesses_kb(p)
+        )
+        return
+    
     if data.startswith("biz:buy:"):
         _, _, biz_id = data.split(":", 2)
         if biz_id not in BUSINESSES:
             await query.answer("Такого бизнеса нет", show_alert=True)
             return
+        
         if biz_id in p.get("businesses", {}):
             await query.answer("Уже куплено", show_alert=True)
             return
+        
         price = BUSINESSES[biz_id]["price"]
         if p["gold"] < price:
-            await query.answer("Недостаточно золота", show_alert=True)
+            await safe_edit_message_text(
+                query,
+                f"❌ Недостаточно золота для покупки {BUSINESSES[biz_id]['name']}.\n"
+                f"Нужно {price}💰, у вас {p['gold']}💰.",
+                reply_markup=build_businesses_kb(p)
+            )
             return
+        
         p["gold"] -= price
         p.setdefault("businesses", {})[biz_id] = {"level": 1, "bought_at": datetime.now().isoformat()}
         if not p.get("last_business_claim"):
             p["last_business_claim"] = datetime.now().isoformat()
+        
+        # Проверяем достижения
+        check_achievements(p, "business_check")
+        
         save_players()
         await safe_edit_message_text(
             query,
-            f"💼 Куплен бизнес: {BUSINESSES[biz_id]['name']} за {price}💰. Баланс: {p['gold']}💰",
+            f"💼 Куплен бизнес: {BUSINESSES[biz_id]['name']} за {price}💰.\n"
+            f"💰 Текущий баланс: {p['gold']}💰",
             reply_markup=build_businesses_kb(p)
         )
         return
+
 async def casino_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /casino"""
     uid = str(update.effective_user.id)
@@ -1563,7 +2197,7 @@ async def show_casino_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик inline-кнопок казино"""
+    """Обработчик inline-кнопок казино с улучшенной функциональностью"""
     query = update.callback_query
     await query.answer()
     
@@ -1580,6 +2214,89 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("awaiting_casino_bet", None)
         await safe_edit_message_text(query, "🚪 Вы покинули казино. Удачи в приключениях!")
         return
+    
+    elif data[1] == "back":
+        await safe_edit_message_text(
+            query,
+            f"🎰 <b>Добро пожаловать в казино!</b>\n"
+            f"💰 Ваш баланс: {p['gold']} золота\n\n"
+            "✍️ Введите сумму ставки (число) или процент от баланса (например, 25%):",
+            parse_mode="HTML"
+        )
+        return
+    
+    elif data[1] == "quick_bets":
+        await safe_edit_message_text(
+            query,
+            f"⚡ <b>Быстрые ставки</b>\n"
+            f"💰 Ваш баланс: {p['gold']} золота\n\n"
+            "Выберите сумму ставки:",
+            parse_mode="HTML",
+            reply_markup=build_quick_bets_kb(p)
+        )
+        return
+    
+    elif data[1] == "quick_bet":
+        if len(data) < 3:
+            await query.answer("Ошибка: не указана сумма ставки", show_alert=True)
+            return
+        
+        try:
+            bet = int(data[2])
+        except ValueError:
+            await query.answer("Ошибка: неверная сумма ставки", show_alert=True)
+            return
+        
+        if bet > p["gold"]:
+            await query.answer("❌ Недостаточно золота!", show_alert=True)
+            return
+        
+        context.user_data["casino_bet"] = bet
+        await safe_edit_message_text(
+            query,
+            f"💰 Ваша ставка: <b>{bet}</b> золота\n"
+            "🎮 Выберите игру:\n\n"
+            "🎯 Удвоение - шанс выигрыша 45%, множитель x2\n"
+            "🎲 Кости - шанс выигрыша 50%, множитель x1.5\n"
+            "🎡 Рулетка - шанс выигрыша 40%, множитель x2\n"
+            "🎰 Слоты - шанс выигрыша 30%, множитель x3\n"
+            "🃏 Блэкджек - шанс выигрыша 48%, множитель x2.5",
+            parse_mode="HTML",
+            reply_markup=build_casino_games_kb()
+        )
+        return
+    
+    elif data[1] == "history":
+        stats = get_casino_stats(p)
+        history = p.get("casino_history", [])
+        
+        text = (
+            f"📊 <b>Статистика казино</b>\n\n"
+            f"🎮 Всего игр: {stats['total_games']}\n"
+            f"🏆 Победы: {stats['wins']}\n"
+            f"💀 Поражения: {stats['losses']}\n"
+            f"📈 Винрейт: {stats['winrate']:.1f}%\n"
+            f"💰 Общий профит: {stats['total_profit']} золота\n\n"
+        )
+        
+        if history:
+            text += "<b>Последние 5 игр:</b>\n"
+            for entry in history[-5:]:
+                game_name = CASINO_GAMES[entry["game"]]["name"]
+                result = "✅" if entry["result"] else "❌"
+                profit = entry["prize"] - entry["bet"]
+                text += f"{result} {game_name}: {entry['bet']}💰 → {profit:+d}💰\n"
+        else:
+            text += "История игр пуста."
+        
+        await safe_edit_message_text(
+            query,
+            text,
+            parse_mode="HTML",
+            reply_markup=build_casino_games_kb()
+        )
+        return
+    
     elif data[1] == "change_bet":
         context.user_data.pop("casino_bet", None)
         context.user_data["awaiting_casino_bet"] = True
@@ -1590,9 +2307,11 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         return
+    
     elif data[1] == "balance":
         await query.answer(f"Ваш баланс: {p['gold']} золота", show_alert=True)
         return
+    
     elif data[1] == "no_money":
         await query.answer("❌ Недостаточно золота для этой игры!", show_alert=True)
         return
@@ -1600,14 +2319,20 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Определяем ставку
     bet = context.user_data.get("casino_bet")
     game_type = data[1]
+    
     if bet is None:
         await query.answer("Сначала введите ставку сообщением в чате.", show_alert=True)
         return
     
     result = play_casino_game(p, game_type, bet)
+    
+    # Добавляем в историю
+    if result["success"] is not None:  # Не добавляем кулдауны
+        add_casino_history(p, game_type, bet, result["success"], result.get("prize", 0))
+    
     save_players()
     
-    # Формируем полное сообщение (также используем при кулдауне)
+    # Формируем полное сообщение
     message = (
         f"🎰 <b>{CASINO_GAMES[game_type]['name']}</b>\n"
         f"💵 Ставка: <b>{bet}</b> золота\n\n"
@@ -1616,7 +2341,6 @@ async def casino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     if "Подождите" in result["message"]:
-        # Показываем алерт и одновременно обновляем текст сообщения с подсказкой
         await query.answer(result["message"], show_alert=True)
         await safe_edit_message_text(
             query,
@@ -1899,19 +2623,7 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверка смерти врага
     if enemy["hp"] <= 0:
         loot_text = grant_rewards(p, enemy["xp"], enemy["gold"], enemy.get("loot"))
-        q = p["quests"].get("rat_hunter")
-        quest_text = ""
-        if q and q["status"] == "active" and enemy["type"] == q["target_type"]:
-            q["progress"] += 1
-            if q["progress"] >= q["required"]:
-                q["status"] = "completed"
-                rew = q["reward"]
-                add_text = grant_rewards(p, rew["xp"], rew["gold"], rew["item"])
-                quest_text = f"\n✅ Квест '{q['title']}' выполнен! {add_text}"
-            save_players()
-        else:
-            quest_text = f"\nКвест '{q['title']}': прогресс {q['progress']}/{q['required']}."
-            save_players()
+        quest_text = update_quests_on_enemy_kill(p, enemy.get("type", ""))
 
         await safe_edit_message_text(query, f"Ты победил {enemy['name']}! {loot_text}{quest_text}")
         context.user_data.pop("battle", None)
@@ -1969,6 +2681,11 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("clan_creation"):
         await handle_clan_creation(update, context)
         return
+    
+    # Проверяем, ожидаем ли мы ввод количества для массовой покупки
+    if context.user_data.get("awaiting_bulk_amount"):
+        await handle_bulk_purchase(update, context)
+        return
 
     if state == "choose_class":
         choice = msg.text.strip()
@@ -2014,6 +2731,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await shop_cmd(update, context)
     elif msg.text == "🎰 Казино":
         await casino_cmd(update, context)
+    elif msg.text == "💸 Траты":
+        await spend_cmd(update, context)
     elif msg.text == "⚙️ Помощь":
         await help_cmd(update, context)
     elif msg.text == "🏆 Достижения":
@@ -2030,6 +2749,61 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pvp_cmd(update, context)
     else:
         await msg.reply_text("Не понимаю. Используй кнопки или команды /help.", reply_markup=MAIN_KB)
+
+async def handle_bulk_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка массовой покупки"""
+    uid = str(update.effective_user.id)
+    if uid not in players:
+        await update.message.reply_text("Сначала нажми /start")
+        return
+    
+    p = players[uid]
+    item_name = context.user_data.get("bulk_buy_item")
+    
+    if not item_name or item_name not in SHOP_ITEMS:
+        context.user_data.pop("bulk_buy_item", None)
+        context.user_data.pop("awaiting_bulk_amount", None)
+        await update.message.reply_text("❌ Ошибка: товар не найден", reply_markup=MAIN_KB)
+        return
+    
+    try:
+        amount = int(update.message.text.strip())
+        if amount <= 0:
+            raise ValueError("Количество должно быть положительным")
+    except ValueError:
+        await update.message.reply_text("❌ Введите корректное количество (число больше 0)")
+        return
+    
+    price = SHOP_ITEMS[item_name]["price"]
+    total_cost = price * amount
+    
+    if p["gold"] < total_cost:
+        max_affordable = p["gold"] // price
+        await update.message.reply_text(
+            f"❌ Недостаточно золота для покупки {amount} {item_name}.\n"
+            f"Нужно {total_cost}💰, у вас {p['gold']}💰.\n"
+            f"Максимум можете купить: {max_affordable} штук"
+        )
+        return
+    
+    # Выполняем покупку
+    p["gold"] -= total_cost
+    add_item(p, item_name, amount)
+    
+    emoji = SHOP_ITEMS[item_name].get("emoji", "📦")
+    
+    await update.message.reply_text(
+        f"🛒 <b>Массовая покупка завершена!</b>\n\n"
+        f"{emoji} Куплено: {item_name} x{amount}\n"
+        f"💸 Потрачено: {total_cost}💰\n"
+        f"💰 Текущий баланс: {p['gold']}💰",
+        parse_mode="HTML",
+        reply_markup=MAIN_KB
+    )
+    
+    # Очищаем состояние
+    context.user_data.pop("bulk_buy_item", None)
+    context.user_data.pop("awaiting_bulk_amount", None)
 
 def build_clans_keyboard(player: Dict[str, Any]) -> InlineKeyboardMarkup:
     """Клавиатура для управления кланами"""
@@ -2062,12 +2836,198 @@ def build_clans_keyboard(player: Dict[str, Any]) -> InlineKeyboardMarkup:
     
     return InlineKeyboardMarkup(keyboard)
 
+def build_spend_kb(player: Dict[str, Any]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📘 Обучение (+80 XP) — 50💰", callback_data="spend:training")],
+        [
+            InlineKeyboardButton("⚒ Улучшить атаку (+1) — 100💰", callback_data="spend:up_atk"),
+            InlineKeyboardButton("🛡 Улучшить защиту (+1) — 100💰", callback_data="spend:up_def"),
+        ],
+        [InlineKeyboardButton("🎁 Купить кейс — 120💰", callback_data="spend:lootbox")],
+        [
+            InlineKeyboardButton("🎗 Пожертвовать 25💰", callback_data="spend:donate:25"),
+            InlineKeyboardButton("50💰", callback_data="spend:donate:50"),
+            InlineKeyboardButton("100💰", callback_data="spend:donate:100"),
+        ],
+        [InlineKeyboardButton("🚪 Закрыть", callback_data="spend:close")],
+    ])
+
+async def spend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.effective_user.id)
+    if uid not in players:
+        await update.message.reply_text("Сначала нажми /start")
+        return
+    p = players[uid]
+    await update.message.reply_text(
+        "💸 Дополнительные способы потратить золото:\nВыберите действие:",
+        reply_markup=build_spend_kb(p)
+    )
+
+async def spend_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    if uid not in players:
+        await safe_edit_message_text(query, "Сначала нажми /start")
+        return
+    p = players[uid]
+    data = query.data.split(":")  # spend:action[:amount]
+
+    def not_enough(required: int):
+        return (
+            f"❌ Недостаточно золота.\n"
+            f"Нужно {required}💰, у тебя {p['gold']}💰."
+        )
+
+    if data[1] == "close":
+        await safe_edit_message_text(query, "Закрыто.")
+        return
+
+    if data[1] == "training":
+        cost, xp_gain = 50, 80
+        if p["gold"] < cost:
+            await safe_edit_message_text(query, not_enough(cost), reply_markup=build_spend_kb(p))
+            return
+        p["gold"] -= cost
+        p["xp"] += xp_gain
+        save_players()
+        await safe_edit_message_text(
+            query,
+            f"📘 Тренировка завершена: +{xp_gain} XP. Баланс: {p['gold']}💰",
+            reply_markup=build_spend_kb(p)
+        )
+        return
+
+    if data[1] == "up_atk":
+        cost = 100
+        if p["gold"] < cost:
+            await safe_edit_message_text(query, not_enough(cost), reply_markup=build_spend_kb(p))
+            return
+        p["gold"] -= cost
+        p["attack"] += 1
+        save_players()
+        await safe_edit_message_text(
+            query,
+            f"⚒ Атака увеличена на 1. Баланс: {p['gold']}💰",
+            reply_markup=build_spend_kb(p)
+        )
+        return
+
+    if data[1] == "up_def":
+        cost = 100
+        if p["gold"] < cost:
+            await safe_edit_message_text(query, not_enough(cost), reply_markup=build_spend_kb(p))
+            return
+        p["gold"] -= cost
+        p["defense"] += 1
+        save_players()
+        await safe_edit_message_text(
+            query,
+            f"🛡 Защита увеличена на 1. Баланс: {p['gold']}💰",
+            reply_markup=build_spend_kb(p)
+        )
+        return
+
+    if data[1] == "lootbox":
+        cost = 120
+        if p["gold"] < cost:
+            await safe_edit_message_text(query, not_enough(cost), reply_markup=build_spend_kb(p))
+            return
+        p["gold"] -= cost
+        reward_text = "Пустой кейс... невезёт!"
+        # 10% шанс питомца, если есть доступные
+        if random.random() < 0.10:
+            available_pets = [pid for pid in PETS.keys() if pid not in p.get("pets", [])]
+            if available_pets:
+                pet_id = random.choice(available_pets)
+                p.setdefault("pets", []).append(pet_id)
+                reward_text = f"🐾 Питомец: {PETS[pet_id]['emoji']} {PETS[pet_id]['name']}"
+        # Иначе предмет или золото
+        if reward_text.startswith("Пустой"):
+            candidates = ["Малое зелье лечения", "Руна силы", "Эликсир удачи", "Свиток телепортации"]
+            if random.random() < 0.6:
+                item = random.choice(candidates)
+                add_item(p, item, 1)
+                reward_text = f"🎒 Предмет: {item}"
+            else:
+                gold_gain = random.randint(50, 200)
+                p["gold"] += gold_gain
+                reward_text = f"💰 Возврат: +{gold_gain} золота"
+        save_players()
+        await safe_edit_message_text(
+            query,
+            f"🎁 Кейс открыт! {reward_text}\nТекущий баланс: {p['gold']}💰",
+            reply_markup=build_spend_kb(p)
+        )
+        return
+
+    if data[1] == "donate":
+        if len(data) < 3:
+            await query.answer("Ошибка доната", show_alert=True)
+            return
+        amount = int(data[2])
+        if p["gold"] < amount:
+            await safe_edit_message_text(query, not_enough(amount), reply_markup=build_spend_kb(p))
+            return
+        p["gold"] -= amount
+        xp_gain = amount // 2
+        p["xp"] += xp_gain
+        save_players()
+        await safe_edit_message_text(
+            query,
+            f"🎗 Спасибо за щедрость! Потрачено {amount}💰, получено +{xp_gain} XP.\nБаланс: {p['gold']}💰",
+            reply_markup=build_spend_kb(p)
+        )
+        return
+
+async def quest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик inline-кнопок квестов"""
+    query = update.callback_query
+    await query.answer()
+    
+    uid = str(query.from_user.id)
+    if uid not in players:
+        await safe_edit_message_text(query, "❌ Сначала начните игру (/start)")
+        return
+    
+    p = players[uid]
+    data = query.data.split(":")
+    
+    if data[1] == "close":
+        await safe_edit_message_text(query, "Закрыто.")
+        return
+    
+    elif data[1] == "refresh":
+        await quests_cmd(update, context)
+        return
+    
+    elif data[1] == "new":
+        # Проверяем количество активных квестов
+        active_quests = sum(1 for q in p["quests"].values() if q.get("status") == "active")
+        if active_quests >= 3:
+            await query.answer("❌ У вас уже максимальное количество активных квестов (3)", show_alert=True)
+            return
+        
+        # Генерируем новый квест
+        new_quest = generate_random_quest(p["level"])
+        quest_id = f"random_quest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        p["quests"][quest_id] = {
+            **new_quest,
+            "progress": 0,
+            "status": "active"
+        }
+        save_players()
+        
+        await query.answer(f"🎯 Новый квест получен: {new_quest['title']}", show_alert=True)
+        await quests_cmd(update, context)
+        return
+
 # --------------------------------- Main --------------------------------------
 
 def main():
     load_players()
     load_clans()
-    app = ApplicationBuilder().token("").build()
+    app = ApplicationBuilder().token("YOUR_TOKEN_BOT").build()
 
     # Основные команды
     app.add_handler(CommandHandler("start", start))
@@ -2085,6 +3045,7 @@ def main():
     app.add_handler(CommandHandler("clans", clans_cmd))
     app.add_handler(CommandHandler("pvp", pvp_cmd))
     app.add_handler(CommandHandler("business", businesses_cmd))
+    app.add_handler(CommandHandler("spend", spend_cmd))
     
     # Обработчики callback'ов
     app.add_handler(CallbackQueryHandler(battle_callback, pattern=r"^battle:"))
@@ -2092,6 +3053,8 @@ def main():
     app.add_handler(CallbackQueryHandler(casino_callback, pattern=r"^casino:"))
     app.add_handler(CallbackQueryHandler(clan_callback, pattern=r"^clan:"))
     app.add_handler(CallbackQueryHandler(businesses_callback, pattern=r"^biz:"))
+    app.add_handler(CallbackQueryHandler(spend_callback, pattern=r"^spend:"))
+    app.add_handler(CallbackQueryHandler(quest_callback, pattern=r"^quest:"))
     
     # Обработчик текстовых сообщений (включая ставки для казино)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
