@@ -61,6 +61,15 @@ async def safe_edit_message_reply_markup(query, reply_markup: Optional[InlineKey
             return
         raise
 
+async def safe_edit_message_by_id(bot, chat_id: int, message_id: int, text: str, parse_mode: Optional[str] = None, reply_markup: Optional[InlineKeyboardMarkup] = None):
+    """Безопасно редактирует сообщение по chat_id/message_id, игнорируя 'Message is not modified'."""
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except BadRequest as exc:
+        if "Message is not modified" in str(exc):
+            return
+        raise
+
 # Базовые параметры классов
 CLASS_STATS = {
     "⚔️ Воин": {"hp": 110, "attack": 7, "defense": 4, "ability": "Мощный удар", "color": "🛡️"},
@@ -146,6 +155,10 @@ clans: Dict[str, Dict[str, Any]] = {}
 
 # PvP система
 pvp_requests: Dict[str, Dict[str, Any]] = {}
+# Активные дуэли: key = duel_id, value = состояние дуэли
+active_duels: Dict[str, Dict[str, Any]] = {}
+# Быстрый маппинг игрока к его дуэли (чтобы не было нескольких боёв одновременно)
+user_to_duel: Dict[str, str] = {}
 
 # Система квестов
 QUESTS = {
@@ -1526,6 +1539,336 @@ async def pvp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_KB)
 
+def build_pvp_request_kb(duel_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Принять", callback_data=f"pvp:accept:{duel_id}")],
+        [InlineKeyboardButton("❌ Отклонить", callback_data=f"pvp:decline:{duel_id}")]
+    ])
+
+def build_pvp_cancel_kb(duel_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚫 Отменить вызов", callback_data=f"pvp:challenge_cancel:{duel_id}")]
+    ])
+
+def build_pvp_actions_kb(duel_id: str, is_active_turn: bool) -> InlineKeyboardMarkup:
+    buttons: List[List[InlineKeyboardButton]] = []
+    if is_active_turn:
+        buttons.append([
+            InlineKeyboardButton("🗡️ Атака", callback_data=f"pvp:act:{duel_id}:attack"),
+            InlineKeyboardButton("✨ Способность", callback_data=f"pvp:act:{duel_id}:ability")
+        ])
+        buttons.append([
+            InlineKeyboardButton("🧪 Зелье", callback_data=f"pvp:act:{duel_id}:potion"),
+            InlineKeyboardButton("🏳️ Сдаться", callback_data=f"pvp:act:{duel_id}:surrender")
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton("🏳️ Сдаться", callback_data=f"pvp:act:{duel_id}:surrender")
+        ])
+    return InlineKeyboardMarkup(buttons)
+
+def format_pvp_battle_text(duel_state: Dict[str, Any]) -> str:
+    p1_name = duel_state["p1_name"]
+    p2_name = duel_state["p2_name"]
+    p1_hp = duel_state["p1"]["hp"]
+    p2_hp = duel_state["p2"]["hp"]
+    p1_max = duel_state["p1"]["max_hp"]
+    p2_max = duel_state["p2"]["max_hp"]
+    turn_name = p1_name if duel_state["turn"] == "p1" else p2_name
+    log_lines = duel_state.get("log", [])[-6:]
+    log = "\n".join(log_lines)
+    return (
+        f"⚔️ Дуэль: {p1_name} vs {p2_name}\n\n"
+        f"{p1_name}: {p1_hp}/{p1_max} HP\n"
+        f"{p2_name}: {p2_hp}/{p2_max} HP\n\n"
+        f"Ход: {turn_name}\n\n"
+        f"{log}"
+    )
+
+def is_in_duel(user_id: str) -> bool:
+    return user_id in user_to_duel
+
+async def pvp_challenge_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда вызова игрока на дуэль: /pvp_challenge <user_id>"""
+    uid = str(update.effective_user.id)
+    if uid not in players:
+        await update.message.reply_text("Сначала нажми /start")
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /pvp_challenge <ID игрока>")
+        return
+    to_id_raw = context.args[0]
+    try:
+        to_id_int = int(to_id_raw)
+    except ValueError:
+        await update.message.reply_text("Некорректный ID игрока")
+        return
+    to_id = str(to_id_int)
+    if to_id == uid:
+        await update.message.reply_text("Нельзя вызвать себя")
+        return
+    if to_id not in players:
+        await update.message.reply_text("Этот игрок ещё не начал игру")
+        return
+    if is_in_duel(uid) or is_in_duel(to_id):
+        await update.message.reply_text("Кто-то из участников уже в дуэли")
+        return
+
+    duel_id = f"{uid}_{to_id}_{int(datetime.now().timestamp())}"
+    p_from = players[uid]
+    p_to = players[to_id]
+
+    # Регистрируем запрос
+    pvp_requests[duel_id] = {
+        "from_id": uid,
+        "to_id": to_id,
+        "timestamp": datetime.now().isoformat(),
+        "status": "pending",
+        "messages": {}
+    }
+
+    # Отправляем сообщения
+    try:
+        to_msg = await context.bot.send_message(
+            chat_id=to_id_int,
+            text=(
+                f"⚔️ Вас вызывает на дуэль {p_from['name']} (ID {uid}).\n\n"
+                f"Принять вызов?"
+            ),
+            reply_markup=build_pvp_request_kb(duel_id)
+        )
+        pvp_requests[duel_id]["messages"]["to"] = {"chat_id": to_msg.chat_id, "message_id": to_msg.message_id}
+    except Exception:
+        await update.message.reply_text("Не удалось доставить вызов. Вероятно, игрок не писал боту.")
+        pvp_requests.pop(duel_id, None)
+        return
+
+    from_msg = await update.message.reply_text(
+        f"⚔️ Вызов отправлен игроку {p_to['name']} (ID {to_id}). Ожидаем ответа...",
+        reply_markup=build_pvp_cancel_kb(duel_id)
+    )
+    pvp_requests[duel_id]["messages"]["from"] = {"chat_id": from_msg.chat_id, "message_id": from_msg.message_id}
+
+async def start_duel(context: ContextTypes.DEFAULT_TYPE, duel_id: str):
+    req = pvp_requests.get(duel_id)
+    if not req:
+        return
+    uid1 = req["from_id"]
+    uid2 = req["to_id"]
+    p1 = players[uid1]
+    p2 = players[uid2]
+
+    # Инициализируем боевые статы
+    s1 = get_player_stats_with_pets(p1)
+    s2 = get_player_stats_with_pets(p2)
+    duel_state = {
+        "id": duel_id,
+        "p1_id": uid1,
+        "p2_id": uid2,
+        "p1_name": p1["name"],
+        "p2_name": p2["name"],
+        "p1": {"hp": s1["max_hp"], "max_hp": s1["max_hp"], "attack": s1["attack"], "defense": s1["defense"], "ability_used": False},
+        "p2": {"hp": s2["max_hp"], "max_hp": s2["max_hp"], "attack": s2["attack"], "defense": s2["defense"], "ability_used": False},
+        "turn": random.choice(["p1", "p2"]),
+        "log": ["Дуэль началась!"] ,
+        "messages": req.get("messages", {})
+    }
+    active_duels[duel_id] = duel_state
+    user_to_duel[uid1] = duel_id
+    user_to_duel[uid2] = duel_id
+
+    text = format_pvp_battle_text(duel_state)
+    msgs = duel_state["messages"]
+    is_p1_turn = duel_state["turn"] == "p1"
+    # Обновляем оба сообщения в боевой экран
+    await safe_edit_message_by_id(context.bot, msgs["from"]["chat_id"], msgs["from"]["message_id"], text, reply_markup=build_pvp_actions_kb(duel_id, is_p1_turn))
+    await safe_edit_message_by_id(context.bot, msgs["to"]["chat_id"], msgs["to"]["message_id"], text, reply_markup=build_pvp_actions_kb(duel_id, not is_p1_turn))
+
+def end_duel(duel_id: str):
+    duel = active_duels.pop(duel_id, None)
+    if not duel:
+        return None
+    user_to_duel.pop(duel["p1_id"], None)
+    user_to_duel.pop(duel["p2_id"], None)
+    pvp_requests.pop(duel_id, None)
+    return duel
+
+async def update_duel_messages(context: ContextTypes.DEFAULT_TYPE, duel_state: Dict[str, Any]):
+    text = format_pvp_battle_text(duel_state)
+    msgs = duel_state["messages"]
+    is_p1_turn = duel_state["turn"] == "p1"
+    await safe_edit_message_by_id(context.bot, msgs["from"]["chat_id"], msgs["from"]["message_id"], text, reply_markup=build_pvp_actions_kb(duel_state["id"], is_p1_turn))
+    await safe_edit_message_by_id(context.bot, msgs["to"]["chat_id"], msgs["to"]["message_id"], text, reply_markup=build_pvp_actions_kb(duel_state["id"], not is_p1_turn))
+
+async def conclude_duel(context: ContextTypes.DEFAULT_TYPE, duel_state: Dict[str, Any], winner: str, loser: str, reason: str = ""):
+    p_win = players[winner]
+    p_lose = players[loser]
+    p_win["pvp_wins"] = p_win.get("pvp_wins", 0) + 1
+    p_lose["pvp_losses"] = p_lose.get("pvp_losses", 0) + 1
+    # Небольшая награда победителю
+    p_win["gold"] += 50
+    p_win["xp"] += 100
+    p_lose["xp"] += 20
+    # Достижение
+    check_achievements(p_win, "pvp_win")
+    save_players()
+
+    text = (
+        f"🏁 Дуэль завершена!\n\n"
+        f"Победитель: {players[winner]['name']}\n"
+        f"Проигравший: {players[loser]['name']}\n"
+        + (f"Причина: {reason}\n\n" if reason else "\n")
+        + f"Награда победителю: +50💰, +100XP\n"
+        + f"Проигравшему: +20XP"
+    )
+    msgs = duel_state["messages"]
+    # Завершаем: убираем кнопки
+    await safe_edit_message_by_id(context.bot, msgs["from"]["chat_id"], msgs["from"]["message_id"], text)
+    await safe_edit_message_by_id(context.bot, msgs["to"]["chat_id"], msgs["to"]["message_id"], text)
+    end_duel(duel_state["id"]) 
+
+async def pvp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    parts = query.data.split(":")
+    if len(parts) < 2:
+        return
+    action = parts[1]
+
+    # Обработка отмены вызова до начала дуэли
+    if action == "challenge_cancel":
+        if len(parts) < 3:
+            return
+        duel_id = parts[2]
+        req = pvp_requests.get(duel_id)
+        if not req or req.get("status") != "pending":
+            await safe_edit_message_text(query, "⚠️ Вызов уже неактуален")
+            return
+        if req["from_id"] != uid:
+            await query.answer("Отменить может только вызывающий", show_alert=True)
+            return
+        # Удаляем запрос и обновляем оба сообщения
+        msgs = req.get("messages", {})
+        try:
+            if "to" in msgs:
+                await safe_edit_message_by_id(context.bot, msgs["to"]["chat_id"], msgs["to"]["message_id"], "Вызов отменён")
+        except Exception:
+            pass
+        await safe_edit_message_text(query, "Вы отменили вызов")
+        pvp_requests.pop(duel_id, None)
+        return
+
+    # Принятие/отклонение вызова
+    if action in ("accept", "decline"):
+        if len(parts) < 3:
+            return
+        duel_id = parts[2]
+        req = pvp_requests.get(duel_id)
+        if not req or req.get("status") != "pending":
+            await safe_edit_message_text(query, "⚠️ Вызов уже неактуален")
+            return
+        if uid != req["to_id"]:
+            await query.answer("Это приглашение не вам", show_alert=True)
+            return
+        if action == "decline":
+            # Сообщаем обеим сторонам
+            msgs = req.get("messages", {})
+            await safe_edit_message_text(query, "Вы отклонили вызов")
+            if "from" in msgs:
+                await safe_edit_message_by_id(context.bot, msgs["from"]["chat_id"], msgs["from"]["message_id"], "Ваш вызов отклонён")
+            pvp_requests.pop(duel_id, None)
+            return
+        # accept
+        if is_in_duel(req["from_id"]) or is_in_duel(req["to_id"]):
+            await safe_edit_message_text(query, "Кто-то из участников уже в другой дуэли")
+            return
+        req["status"] = "accepted"
+        await start_duel(context, duel_id)
+        return
+
+    # Действия в дуэли
+    if action == "act":
+        if len(parts) < 4:
+            return
+        duel_id = parts[2]
+        cmd = parts[3]
+        duel = active_duels.get(duel_id)
+        if not duel:
+            await safe_edit_message_text(query, "⚠️ Дуэль завершена")
+            return
+        is_p1 = uid == duel["p1_id"]
+        is_p2 = uid == duel["p2_id"]
+        if not (is_p1 or is_p2):
+            await query.answer("Вы не участник этой дуэли", show_alert=True)
+            return
+        turn_key = duel["turn"]
+        if (turn_key == "p1" and not is_p1) or (turn_key == "p2" and not is_p2):
+            # Разрешим сдаться в любой момент
+            if cmd != "surrender":
+                await query.answer("Сейчас не ваш ход", show_alert=True)
+                return
+        attacker_key = "p1" if is_p1 else "p2"
+        defender_key = "p2" if is_p1 else "p1"
+        attacker_id = duel["p1_id"] if is_p1 else duel["p2_id"]
+        defender_id = duel["p2_id"] if is_p1 else duel["p1_id"]
+        attacker_p = players[attacker_id]
+        defender_p = players[defender_id]
+
+        # Собираем статы (атака/защита фиксированы при старте в duel state)
+        atk_stat = duel[attacker_key]["attack"]
+        def_stat = duel[defender_key]["defense"]
+
+        log_add = ""
+        if cmd == "attack":
+            dmg = dmg_roll(atk_stat, def_stat)
+            duel[defender_key]["hp"] = max(0, duel[defender_key]["hp"] - dmg)
+            log_add = f"{attacker_p['name']} атакует и наносит {dmg} урона."
+        elif cmd == "ability":
+            if duel[attacker_key]["ability_used"]:
+                await query.answer("Способность уже использована", show_alert=True)
+                return
+            cls = attacker_p.get("class")
+            if cls == "⚔️ Воин":
+                dmg = dmg_roll(atk_stat, def_stat) * 2
+            elif cls == "🧙 Маг":
+                dmg = 15
+            elif cls == "🕵️ Вор":
+                dmg = max(1, duel[attacker_key]["attack"] + random.randint(0, 2))
+            else:
+                dmg = dmg_roll(atk_stat, def_stat)
+            duel[defender_key]["hp"] = max(0, duel[defender_key]["hp"] - dmg)
+            duel[attacker_key]["ability_used"] = True
+            log_add = f"{attacker_p['name']} применяет способность и наносит {dmg} урона!"
+        elif cmd == "potion":
+            # Пьём малое зелье
+            if consume_item(attacker_p, "Малое зелье лечения", 1):
+                healed = min(35, duel[attacker_key]["max_hp"] - duel[attacker_key]["hp"])
+                duel[attacker_key]["hp"] += healed
+                log_add = f"{attacker_p['name']} выпивает зелье (+{healed} HP)."
+            else:
+                await query.answer("Нет Малых зелий лечения", show_alert=True)
+                return
+        elif cmd == "surrender":
+            duel[attacker_key]["hp"] = 0
+            log_add = f"{attacker_p['name']} сдаётся!"
+        else:
+            return
+
+        duel.setdefault("log", []).append(log_add)
+
+        # Проверяем конец дуэли
+        if duel[defender_key]["hp"] <= 0 or duel[attacker_key]["hp"] <= 0:
+            winner = attacker_id if duel[defender_key]["hp"] <= 0 else defender_id
+            loser = defender_id if winner == attacker_id else attacker_id
+            await conclude_duel(context, duel, winner, loser, reason=("сдача" if cmd == "surrender" else ""))
+            return
+
+        # Переход хода, если действие было не лечением? В любом случае меняем ход.
+        duel["turn"] = defender_key
+        await update_duel_messages(context, duel)
+        return
+
 async def inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     if uid not in players:
@@ -1630,10 +1973,10 @@ async def adventure_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сначала нажми /start")
         return
     
-    # Проверка активного боя или торговца
-    if context.user_data.get("battle") or context.user_data.get("merchant_active"):
+    # Проверка активного боя, торговца или дуэли
+    if context.user_data.get("battle") or context.user_data.get("merchant_active") or (uid in user_to_duel):
         await update.message.reply_text(
-            "⚠️ Сначала завершите текущее событие (бой или торговлю)!",
+            "⚠️ Сначала завершите текущее событие (бой/торговля/дуэль)!",
             reply_markup=MAIN_KB
         )
         return
@@ -3044,6 +3387,7 @@ def main():
     app.add_handler(CommandHandler("pets", pets_cmd))
     app.add_handler(CommandHandler("clans", clans_cmd))
     app.add_handler(CommandHandler("pvp", pvp_cmd))
+    app.add_handler(CommandHandler("pvp_challenge", pvp_challenge_cmd))
     app.add_handler(CommandHandler("business", businesses_cmd))
     app.add_handler(CommandHandler("spend", spend_cmd))
     
@@ -3055,6 +3399,7 @@ def main():
     app.add_handler(CallbackQueryHandler(businesses_callback, pattern=r"^biz:"))
     app.add_handler(CallbackQueryHandler(spend_callback, pattern=r"^spend:"))
     app.add_handler(CallbackQueryHandler(quest_callback, pattern=r"^quest:"))
+    app.add_handler(CallbackQueryHandler(pvp_callback, pattern=r"^pvp:"))
     
     # Обработчик текстовых сообщений (включая ставки для казино)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
