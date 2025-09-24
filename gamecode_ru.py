@@ -3370,7 +3370,8 @@ async def quest_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     load_players()
     load_clans()
-    app = ApplicationBuilder().token("YOUR_TOKEN_BOT").build()
+    token = os.getenv('BOT_TOKEN', 'YOUR_TOKEN_BOT')
+    app = ApplicationBuilder().token(token).build()
 
     # Основные команды
     app.add_handler(CommandHandler("start", start))
